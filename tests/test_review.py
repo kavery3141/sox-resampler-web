@@ -110,9 +110,28 @@ class BatchReviewTest(unittest.TestCase):
                     "profile_error": None,
                 }
 
+            def fake_source_snapshot(source: Path):
+                stat = source.stat()
+                return {
+                    "device": int(stat.st_dev),
+                    "inode": int(stat.st_ino),
+                    "size_bytes": int(stat.st_size),
+                    "mtime_ns": int(stat.st_mtime_ns),
+                    "sample_rate": 96000,
+                    "bits_per_sample": 24,
+                    "channels": 2,
+                    "critical_tags": {
+                        "ALBUMARTIST": "Artist",
+                        "ALBUM": "Album",
+                        "RELEASETYPE": "album",
+                        "MUSICBRAINZ_ALBUMID": "11111111-2222-3333-4444-555555555555",
+                    },
+                }
+
             with (
                 patch("app.review._physical_album_track_count", return_value=1),
                 patch("app.review.preview", side_effect=fake_preview),
+                patch("app.review.capture_source_snapshot", side_effect=fake_source_snapshot),
                 patch("app.review.FLAC", return_value=_FakeFlac()),
             ):
                 review = build_batch_review(
