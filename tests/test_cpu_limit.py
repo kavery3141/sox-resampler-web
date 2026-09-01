@@ -3,34 +3,39 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from app.converter import ConversionError, ProfileUnavailable, apply_cpu_limit
+from app.converter import (
+    ConversionError,
+    ProfileUnavailable,
+    cpu_limiter_command,
+    validate_cpu_limit,
+)
 
 
 class CpuLimitCommandTests(unittest.TestCase):
-    def test_disabled_limit_leaves_command_unchanged(self) -> None:
-        command = ["nice", "-n", "10", "sox", "in.flac", "out.flac"]
-        self.assertIs(apply_cpu_limit(command, None), command)
+    def test_disabled_limit_requires_no_limiter(self) -> None:
+        self.assertIsNone(validate_cpu_limit(None))
 
-    def test_enabled_limit_wraps_complete_execution_command(self) -> None:
-        command = ["nice", "-n", "10", "ionice", "-c", "2", "sox", "in.flac", "out.flac"]
+    def test_enabled_limit_validates_and_builds_pid_controller(self) -> None:
         with patch("app.converter.shutil.which", return_value="/usr/bin/cpulimit"):
-            wrapped = apply_cpu_limit(command, 55)
+            limit = validate_cpu_limit(55)
+        self.assertEqual(limit, 55)
         self.assertEqual(
-            wrapped[:9],
-            ["cpulimit", "-q", "-f", "-s", "SIGTERM", "-l", "55", "--", "nice"],
+            cpu_limiter_command(1234, limit),
+            ["cpulimit", "-q", "-z", "-l", "55", "-p", "1234"],
         )
-        self.assertEqual(wrapped[8:], command)
 
     def test_invalid_limit_is_rejected(self) -> None:
         with self.assertRaises(ConversionError):
-            apply_cpu_limit(["sox"], 9)
+            validate_cpu_limit(9)
         with self.assertRaises(ConversionError):
-            apply_cpu_limit(["sox"], 101)
+            validate_cpu_limit(101)
+        with self.assertRaises(ConversionError):
+            cpu_limiter_command(0, 50)
 
     def test_missing_cpulimit_fails_before_conversion(self) -> None:
         with patch("app.converter.shutil.which", return_value=None):
             with self.assertRaises(ProfileUnavailable):
-                apply_cpu_limit(["sox"], 50)
+                validate_cpu_limit(50)
 
 
 if __name__ == "__main__":

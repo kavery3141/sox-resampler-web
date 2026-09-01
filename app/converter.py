@@ -335,15 +335,15 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
     return command
 
 
-def apply_cpu_limit(command: list[str], cpu_limit_percent: int | None) -> list[str]:
-    """Wrap a SoX command with a per-worker CPU throttle when configured.
+def validate_cpu_limit(cpu_limit_percent: int | None) -> int | None:
+    """Validate an optional per-worker CPU ceiling without changing the SoX command.
 
-    ``cpulimit`` measures percentage relative to one logical CPU. Each conversion worker receives
-    its own cap, so two workers may together consume up to roughly twice the configured value.
-    The wrapper is operational only; it does not alter DSP settings or the resampling preset.
+    CPU throttling is applied by a separate controller attached to the exact spawned SoX PID. This
+    lets the converter wait for SoX itself and preserves its real exit status instead of trusting a
+    wrapper process to proxy it.
     """
     if cpu_limit_percent is None:
-        return command
+        return None
     try:
         limit = int(cpu_limit_percent)
     except (TypeError, ValueError) as exc:
@@ -356,10 +356,13 @@ def apply_cpu_limit(command: list[str], cpu_limit_percent: int | None) -> list[s
         raise ProfileUnavailable(
             "A conversion CPU cap is configured but the cpulimit runtime is unavailable"
         )
-    # Keep cpulimit in the foreground so the job manager waits for the launched SoX
-    # process. SIGTERM is forwarded to the child if the wrapper itself is stopped, which
-    # keeps Force Stop semantics reliable with the extra supervisor process.
-    return ["cpulimit", "-q", "-f", "-s", "SIGTERM", "-l", str(limit), "--", *command]
+    return limit
+
+
+def cpu_limiter_command(pid: int, limit: int) -> list[str]:
+    if pid <= 0:
+        raise ConversionError("CPU limiter requires a valid SoX process ID")
+    return ["cpulimit", "-q", "-z", "-l", str(limit), "-p", str(pid)]
 
 
 def preview(
@@ -374,7 +377,7 @@ def preview(
     blockers = preservation_blockers(source)
     try:
         command = build_sox_command(source, temp, profile, source_bits)
-        command = apply_cpu_limit(command, cpu_limit_percent)
+        validate_cpu_limit(cpu_limit_percent)
         profile_available = True
         profile_error = None
     except ProfileUnavailable as exc:
@@ -446,14 +449,35 @@ def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
         pass
 
 
+def _stop_cpu_limiter(controller: subprocess.Popen[str] | None) -> None:
+    if controller is None:
+        return
+    if controller.poll() is None:
+        controller.terminate()
+    try:
+        controller.communicate(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        controller.kill()
+        try:
+            controller.communicate(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def _run_sox_command(
     command: list[str],
     abort_check: Callable[[], bool] | None,
+    cpu_limit_percent: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    if abort_check is None:
+    limit = validate_cpu_limit(cpu_limit_percent)
+    if abort_check is not None:
+        _check_force_stop(abort_check)
+
+    # Always use Popen when a limiter is active so cpulimit can target the exact SoX process PID.
+    # `nice` and `ionice` exec the next program, retaining this PID through to SoX.
+    if limit is None and abort_check is None:
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
-    _check_force_stop(abort_check)
     proc = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -461,23 +485,45 @@ def _run_sox_command(
         text=True,
         start_new_session=True,
     )
+    controller: subprocess.Popen[str] | None = None
     try:
+        if limit is not None:
+            controller = subprocess.Popen(
+                cpu_limiter_command(proc.pid, limit),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
         while True:
             try:
                 stdout, stderr = proc.communicate(timeout=0.2)
+                # A very short SoX process can finish before cpulimit's process scan attaches. That
+                # tiny burst is harmless; SoX's real result remains authoritative. For any longer
+                # conversion, a limiter failure while SoX is still alive is treated as a hard file
+                # failure so an explicitly configured cap is never silently ignored.
                 return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
-                if abort_check():
+                if abort_check is not None and abort_check():
                     _terminate_process_group(proc)
                     try:
                         proc.communicate(timeout=1.0)
                     except subprocess.TimeoutExpired:
                         pass
                     raise ConversionError("Force stop requested by user; SoX terminated and original left untouched")
+                if controller is not None:
+                    controller_rc = controller.poll()
+                    if controller_rc not in (None, 0) and proc.poll() is None:
+                        _, limiter_stderr = controller.communicate(timeout=1.0)
+                        _terminate_process_group(proc)
+                        detail = (limiter_stderr or "cpulimit exited unexpectedly").strip()
+                        raise ConversionError(f"CPU limiter failed while SoX was running: {detail}")
     except Exception:
         if proc.poll() is None:
             _terminate_process_group(proc)
         raise
+    finally:
+        _stop_cpu_limiter(controller)
 
 
 def convert_file(
@@ -508,7 +554,7 @@ def convert_file(
         raise ConversionError(f"Temporary file already exists: {temp}")
 
     command = build_sox_command(source, temp, profile, src_bits)
-    command = apply_cpu_limit(command, cpu_limit_percent)
+    validate_cpu_limit(cpu_limit_percent)
     result = ConversionResult(
         source=str(source),
         status="running",
@@ -531,7 +577,11 @@ def convert_file(
 
     try:
         _check_force_stop(combined_abort_check)
-        proc = _run_sox_command(command, combined_abort_check)
+        proc = _run_sox_command(
+            command,
+            combined_abort_check,
+            cpu_limit_percent=cpu_limit_percent,
+        )
         if proc.returncode != 0:
             raise ConversionError(f"SoX failed: {(proc.stderr or proc.stdout).strip()}")
         if re.search(r"\bclipped\b", proc.stderr or "", re.IGNORECASE):

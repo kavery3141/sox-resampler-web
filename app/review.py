@@ -264,11 +264,16 @@ def build_batch_review(
                         if int(item.get("mtime_ns") or 0) != current_mtime_ns:
                             track_blockers.append("Source modification time changed since scan; rescan required")
 
-                        detail = preview(
-                            resolved_source,
-                            profile,
-                            cpu_limit_percent=cpu_limit_percent,
-                        )
+                        if cpu_limit_percent is None:
+                            # Keep the default uncapped preflight call compatible with ordinary
+                            # preview consumers and mocks. CPU control is operational, not DSP.
+                            detail = preview(resolved_source, profile)
+                        else:
+                            detail = preview(
+                                resolved_source,
+                                profile,
+                                cpu_limit_percent=cpu_limit_percent,
+                            )
                         if int(detail["sample_rate"]) != source_rate:
                             track_blockers.append(
                                 f"Source sample rate changed since scan ({source_rate} -> {detail['sample_rate']}); rescan required"

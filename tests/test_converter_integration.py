@@ -79,10 +79,8 @@ class ConverterIntegrationTest(unittest.TestCase):
             self.assertEqual(result.status, "completed", result.error)
             self.assertEqual(FLAC(source).info.sample_rate, 48000)
             self.assertTrue(result.command)
-            self.assertEqual(
-                result.command[:8],
-                ["cpulimit", "-q", "-f", "-s", "SIGTERM", "-l", "100", "--"],
-            )
+            self.assertEqual(result.command[0:4], ["nice", "-n", "10", "ionice"])
+            self.assertNotIn("cpulimit", result.command)
             self.assertFalse(source.with_name(f".{source.name}.sox-resampler.tmp.flac").exists())
 
 
