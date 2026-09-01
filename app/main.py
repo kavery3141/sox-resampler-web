@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from . import db
 from .admin import build_admin_router
 from .converter import recover_pending_transactions
+from .issues import build_metadata_issues, filter_issues, render_issues_csv, render_issues_txt
 from .jobs import ConversionJobManager, JobError
 from .profiles import get_profile, list_profiles
 from .reports import (
@@ -275,6 +276,44 @@ def candidates(
         raise HTTPException(status_code=400, detail="Invalid above sample rate")
     albums = db.candidate_albums(DB_PATH, cleaned, above)
     return {"rates": cleaned, "above": above, "count": len(albums), "albums": albums}
+
+
+@app.get("/api/library/issues")
+def metadata_issues(severity: str = Query(default="all")) -> dict[str, Any]:
+    try:
+        issues = filter_issues(build_metadata_issues(DB_PATH), severity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    counts = {"blocking": 0, "warning": 0, "info": 0}
+    for issue in issues:
+        counts[issue["severity"]] += 1
+    return {"severity": severity, "count": len(issues), "counts": counts, "issues": issues}
+
+
+@app.get("/api/library/issues/report.txt")
+def metadata_issues_report_txt(severity: str = Query(default="all")) -> Response:
+    try:
+        issues = filter_issues(build_metadata_issues(DB_PATH), severity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _attachment(
+        render_issues_txt(issues, TIMEZONE),
+        "text/plain; charset=utf-8",
+        "sox-resampler-metadata-issues.txt",
+    )
+
+
+@app.get("/api/library/issues/report.csv")
+def metadata_issues_report_csv(severity: str = Query(default="all")) -> Response:
+    try:
+        issues = filter_issues(build_metadata_issues(DB_PATH), severity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _attachment(
+        render_issues_csv(issues),
+        "text/csv; charset=utf-8",
+        "sox-resampler-metadata-issues.csv",
+    )
 
 
 @app.post("/api/convert/review")
