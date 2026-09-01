@@ -197,3 +197,6 @@ document.body.appendChild(liveStatsScript);
 const advancedPresetsScript=document.createElement('script');
 advancedPresetsScript.src='/static/advanced-presets.js';
 document.body.appendChild(advancedPresetsScript);
+const batchEditorScript=document.createElement('script');
+batchEditorScript.src='/static/batch-editor.js';
+document.body.appendChild(batchEditorScript);
