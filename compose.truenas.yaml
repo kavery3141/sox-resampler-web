@@ -4,6 +4,11 @@ services:
     container_name: sox-resampler-web
     restart: unless-stopped
     user: "568:568"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "30058:8080"
     environment:
@@ -15,8 +20,8 @@ services:
       DEFAULT_FLAC_COMPRESSION: "4"
       DEFAULT_WORKERS: "1"
       MAX_WORKERS: "2"
-    devices:
-      - /dev/zfs:/dev/zfs
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     volumes:
       - /mnt/MainStorage/StorageDataset/Music:/music:rw
       - /mnt/MainStorage/StorageDataset/sox-resampler:/data:rw
