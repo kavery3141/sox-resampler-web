@@ -1,5 +1,8 @@
 const APPEARANCE_THEME_KEY='sox-resampler-theme';
 const APPEARANCE_DENSITY_KEY='sox-resampler-density';
+const LIBRARY_HEALTH_KEY='sox-resampler-library-health';
+const LIBRARY_RECENT_KEY='sox-resampler-library-recent';
+const LIBRARY_SORT_KEY='sox-resampler-library-sort';
 
 function effectiveTheme(){
   const pref=localStorage.getItem(APPEARANCE_THEME_KEY)||'system';
@@ -76,13 +79,58 @@ async function loadHome(){
 
 function openHighRateCandidates(){
   $('r96').checked=true;$('r192').checked=true;$('above48').checked=false;
-  resetAck();loadCandidates();showView('library');
+  $('healthFilter').value='convertible';$('recentFilter').value='all';
+  saveLibraryFilters();resetAck();loadCandidates();showView('library');
 }
+
+const baseFiltered=filtered;
+filtered=function(){
+  let rows=baseFiltered();
+  const health=$('healthFilter')?.value||'convertible';
+  if(health==='convertible')rows=rows.filter(a=>a.selectable);
+  else if(health==='clean')rows=rows.filter(a=>a.selectable&&!(a.warnings||[]).length);
+  else if(health==='warnings')rows=rows.filter(a=>a.selectable&&(a.warnings||[]).length>0);
+  else if(health==='blocked')rows=rows.filter(a=>!a.selectable);
+
+  const recent=$('recentFilter')?.value||'all';
+  if(recent!=='all'){
+    const days=Number(recent);const cutoff=Date.now()-days*86400000;
+    rows=rows.filter(a=>{const t=Date.parse(a.first_seen||'');return Number.isFinite(t)&&t>=cutoff});
+  }
+
+  const sort=$('sortFilter')?.value||'albumartist';
+  rows=[...rows].sort((a,b)=>{
+    if(sort==='album')return String(a.album||'').localeCompare(String(b.album||''),undefined,{sensitivity:'base'});
+    if(sort==='rate')return Math.max(...(b.source_rates||[0]))-Math.max(...(a.source_rates||[0]));
+    if(sort==='size')return Number(b.matching_bytes||0)-Number(a.matching_bytes||0);
+    if(sort==='recent')return Date.parse(b.first_seen||0)-Date.parse(a.first_seen||0);
+    const aa=String(a.albumartist||'').localeCompare(String(b.albumartist||''),undefined,{sensitivity:'base'});
+    return aa||String(a.album||'').localeCompare(String(b.album||''),undefined,{sensitivity:'base'});
+  });
+  return rows;
+};
+
+function loadLibraryFilters(){
+  $('healthFilter').value=localStorage.getItem(LIBRARY_HEALTH_KEY)||'convertible';
+  $('recentFilter').value=localStorage.getItem(LIBRARY_RECENT_KEY)||'all';
+  $('sortFilter').value=localStorage.getItem(LIBRARY_SORT_KEY)||'albumartist';
+}
+function saveLibraryFilters(){
+  localStorage.setItem(LIBRARY_HEALTH_KEY,$('healthFilter').value);
+  localStorage.setItem(LIBRARY_RECENT_KEY,$('recentFilter').value);
+  localStorage.setItem(LIBRARY_SORT_KEY,$('sortFilter').value);
+}
+function libraryFilterChanged(){saveLibraryFilters();render()}
 
 $('navHome').onclick=()=>showView('home');
 $('homeOpenCandidates').onclick=openHighRateCandidates;
 $('themeSelect').onchange=saveAppearance;
 $('densitySelect').onchange=saveAppearance;
+$('healthFilter').onchange=libraryFilterChanged;
+$('recentFilter').onchange=libraryFilterChanged;
+$('sortFilter').onchange=libraryFilterChanged;
 applyAppearance();
+loadLibraryFilters();
 if(window.matchMedia){window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if((localStorage.getItem(APPEARANCE_THEME_KEY)||'system')==='system')applyAppearance()})}
 loadHome();
+render();
