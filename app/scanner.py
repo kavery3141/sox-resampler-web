@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from mutagen.flac import FLAC
 
 from . import db as dbmod
+from .artwork import prune_album_artwork, refresh_album_artwork
 
 
 HIDDEN_DIRS = {".snapshots", ".snapshot", ".trash", ".recycle", "@recycle", "$recycle.bin"}
@@ -195,6 +196,7 @@ class LibraryScanner:
                     dirs[:] = []
                     continue
 
+                folder_has_indexed_flac = False
                 for filename in files:
                     self._pause_checkpoint()
                     lower_name = filename.lower()
@@ -207,6 +209,7 @@ class LibraryScanner:
                     path = root_path / filename
                     if path.is_symlink() or self._excluded(path, exact, globs):
                         continue
+                    folder_has_indexed_flac = True
                     with self._lock:
                         self.state.files_seen += 1
                         self.state.current_path = str(path)
@@ -269,6 +272,14 @@ class LibraryScanner:
                             self.state.errors += 1
                             self.state.last_error = f"{path}: {exc}"
 
+                # Artwork is resolved only after this folder's indexed track rows are current. The
+                # operation writes resized thumbnails under /data; UI requests never read album art
+                # from the music mount. This check also notices fallback image changes even when all
+                # FLACs themselves were unchanged.
+                if folder_has_indexed_flac:
+                    self._pause_checkpoint()
+                    refresh_album_artwork(self.db_path, self.db_path.parent, root_path, self._now())
+
             self._pause_checkpoint()
             # Deletion detection happens only after a complete, traversal-safe pass while the
             # source is reachable. A transient scandir/storage error must never look like mass
@@ -279,6 +290,7 @@ class LibraryScanner:
                     stale = [(r["path"],) for r in rows if r["path"] not in seen_paths]
                     if stale:
                         conn.executemany("DELETE FROM tracks WHERE path=?", stale)
+                prune_album_artwork(self.db_path, self.db_path.parent)
             elif not traversal_safe:
                 with self._lock:
                     note = "Traversal errors occurred; stale index entries were preserved"
