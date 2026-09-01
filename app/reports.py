@@ -19,6 +19,112 @@ def _result_payload(raw: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def render_review_txt(review: dict[str, Any], timezone: str) -> str:
+    profile = review.get("profile") or {}
+    lines = [
+        "SoX Resampler Web - Pre-Conversion Review",
+        f"Timezone: {timezone}",
+        f"Preset: {profile.get('name') or profile.get('id') or ''}",
+        f"Target sample rate: {profile.get('target_rate') or ''}",
+        f"Bit depth: {profile.get('bit_depth') or ''}",
+        f"FLAC compression: {profile.get('flac_compression') or ''}",
+        f"Workers: {review.get('workers') or ''}",
+        f"Albums: {review.get('album_count') or 0}",
+        f"Matching tracks: {review.get('matching_tracks') or 0}",
+        f"Source bytes: {review.get('source_bytes') or 0}",
+        f"Estimated output bytes: {review.get('estimated_output_bytes') or 0}",
+        f"Estimated savings bytes: {review.get('estimated_savings_bytes') or 0}",
+        f"Free bytes: {review.get('free_bytes') or 0}",
+        f"Required free bytes: {review.get('required_free_bytes') or 0}",
+        f"Can start: {'yes' if review.get('can_start') else 'no'}",
+    ]
+    blockers = review.get("blockers") or []
+    if blockers:
+        lines.extend(["", "Blockers:"])
+        lines.extend(f"- {item}" for item in blockers)
+    lines.extend(["", "Albums:"])
+    for album in review.get("albums") or []:
+        lines.append(
+            f"{album.get('albumartist') or ''} / {album.get('album') or ''} / {album.get('folder') or ''}"
+        )
+        lines.append(
+            "  "
+            f"Matching tracks: {album.get('matching_tracks') or 0}; "
+            f"Source bytes: {album.get('source_bytes') or 0}; "
+            f"Estimated output bytes: {album.get('estimated_output_bytes') or 0}; "
+            f"Estimated savings bytes: {album.get('estimated_savings_bytes') or 0}"
+        )
+        for warning in album.get("warnings") or []:
+            lines.append(f"  Warning: {warning}")
+        for blocker in album.get("blockers") or []:
+            lines.append(f"  Blocker: {blocker}")
+        for track in album.get("tracks") or []:
+            lines.append(
+                "  Track: "
+                f"{track.get('path') or ''}; "
+                f"{track.get('sample_rate') or ''} Hz; "
+                f"{track.get('bits_per_sample') or ''}-bit; "
+                f"{track.get('channels') or ''} channels; "
+                f"{track.get('source_bytes') or 0} bytes"
+            )
+            if track.get("command"):
+                lines.append(f"    Command: {' '.join(str(x) for x in track['command'])}")
+    return "\n".join(lines) + "\n"
+
+
+def render_review_csv(review: dict[str, Any], timezone: str) -> str:
+    output = io.StringIO(newline="")
+    fieldnames = [
+        "timezone",
+        "profile_id",
+        "profile_name",
+        "workers",
+        "albumartist",
+        "album",
+        "folder",
+        "path",
+        "sample_rate",
+        "bits_per_sample",
+        "channels",
+        "source_bytes",
+        "estimated_output_bytes",
+        "replaygain_complete",
+        "warnings",
+        "blockers",
+        "command",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    profile = review.get("profile") or {}
+    for album in review.get("albums") or []:
+        warnings = " | ".join(str(x) for x in album.get("warnings") or [])
+        album_blockers = " | ".join(str(x) for x in album.get("blockers") or [])
+        for track in album.get("tracks") or []:
+            track_blockers = " | ".join(str(x) for x in track.get("blockers") or [])
+            writer.writerow(
+                {
+                    "timezone": timezone,
+                    "profile_id": profile.get("id") or "",
+                    "profile_name": profile.get("name") or "",
+                    "workers": review.get("workers") or "",
+                    "albumartist": album.get("albumartist") or "",
+                    "album": album.get("album") or "",
+                    "folder": album.get("folder") or "",
+                    "path": track.get("path") or "",
+                    "sample_rate": track.get("sample_rate") or "",
+                    "bits_per_sample": track.get("bits_per_sample") or "",
+                    "channels": track.get("channels") or "",
+                    "source_bytes": track.get("source_bytes") or 0,
+                    "estimated_output_bytes": track.get("estimated_output_bytes") or 0,
+                    "replaygain_complete": bool(track.get("replaygain_complete")),
+                    "warnings": warnings,
+                    "blockers": " | ".join(x for x in (album_blockers, track_blockers) if x),
+                    "command": " ".join(str(x) for x in track.get("command") or []),
+                }
+            )
+    return output.getvalue()
+
+
 def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any] | None:
     with db.session(db_path) as conn:
         job = conn.execute("SELECT * FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
