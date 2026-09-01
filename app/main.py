@@ -48,7 +48,7 @@ from .settings_extras import (
 from .temp_cleanup import cleanup_orphan_temps
 from .update_check import build_update_router
 
-APP_VERSION = "0.7.0-dev"
+APP_VERSION = os.getenv("APP_VERSION", "0.7.0-dev")
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
