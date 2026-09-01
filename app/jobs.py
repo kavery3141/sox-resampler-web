@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from . import db
 from .converter import convert_file
 from .profiles import get_profile
+from .storage_health import zfs_pool_health
 
 
 class JobError(RuntimeError):
@@ -107,6 +108,9 @@ class ConversionJobManager:
 
     def _runtime_gate(self, required_temp_bytes: int) -> str | None:
         """Return a reason to pause before starting more file work, or None when safe."""
+        zfs = zfs_pool_health()
+        if not zfs["ok"]:
+            return f"{zfs['reason']}; conversion paused before the next file"
         if bool(db.get_setting(self.db_path, "read_only_mode", False)):
             return "Read-only Scan Mode was enabled; conversion paused before the next file"
         if not self.music_root.exists():
