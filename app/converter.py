@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 from mutagen.flac import FLAC
 
+from .force_stop import abort_requested as registered_abort_requested
+from .force_stop import register_active, unregister_active
 from .profiles import ResampleProfile
 from .transactions import ReplacementJournal, recover_journals
 
@@ -484,19 +486,24 @@ def convert_file(
     journal_root = journal_root or Path(os.getenv("DATA_ROOT", "/data")) / "transactions"
     journal = ReplacementJournal(journal_root, source)
     journal_prepared = False
+    active_token = register_active(source)
+
+    def combined_abort_check() -> bool:
+        external = bool(abort_check()) if abort_check is not None else False
+        return external or registered_abort_requested(source, active_token)
 
     try:
-        _check_force_stop(abort_check)
-        proc = _run_sox_command(command, abort_check)
+        _check_force_stop(combined_abort_check)
+        proc = _run_sox_command(command, combined_abort_check)
         if proc.returncode != 0:
             raise ConversionError(f"SoX failed: {(proc.stderr or proc.stdout).strip()}")
         if re.search(r"\bclipped\b", proc.stderr or "", re.IGNORECASE):
             raise ConversionError(f"SoX reported clipping: {proc.stderr.strip()}")
-        _check_force_stop(abort_check)
+        _check_force_stop(combined_abort_check)
 
         copy_user_metadata(source, temp)
         compare_user_metadata(source, temp)
-        _check_force_stop(abort_check)
+        _check_force_stop(combined_abort_check)
         out = FLAC(temp)
         if int(out.info.sample_rate) != profile.target_rate:
             raise ConversionError("Output sample rate verification failed")
@@ -509,23 +516,23 @@ def convert_file(
             raise ConversionError("Output duration verification failed")
 
         _full_decode_test(temp)
-        _check_force_stop(abort_check)
+        _check_force_stop(combined_abort_check)
         peak = _peak(temp)
         if peak is not None and peak > 1.0:
             raise ConversionError(f"Output peak exceeds full scale: {peak:.9f}")
 
         _apply_filesystem_metadata(temp, fs_metadata)
         result.temp_sha256 = _sha256(temp)
-        _check_force_stop(abort_check)
+        _check_force_stop(combined_abort_check)
 
         if source_identity(source) != identity:
             raise ConversionError("Source changed during conversion; refusing replacement")
         _verify_filesystem_metadata(source, fs_metadata, "Source before replacement")
-        _check_force_stop(abort_check)
+        _check_force_stop(combined_abort_check)
 
         journal.prepare(source, temp, identity, result.temp_sha256)
         journal_prepared = True
-        _check_force_stop(abort_check)
+        _check_force_stop(combined_abort_check)
 
         _rename_exchange(source, temp)
         exchanged = True
@@ -562,6 +569,7 @@ def convert_file(
         result.error = str(exc)
         return result
     finally:
+        unregister_active(source, active_token)
         if not completed and not exchanged and temp.exists():
             try:
                 temp.unlink()
