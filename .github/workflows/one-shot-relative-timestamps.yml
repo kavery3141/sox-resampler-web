@@ -1,0 +1,39 @@
+name: One-shot relative timestamps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/one_shot_relative_timestamps.py
+      - .github/workflows/one-shot-relative-timestamps.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply relative timestamp implementation
+        run: python tools/one_shot_relative_timestamps.py
+      - name: Validate Web UI JavaScript
+        run: |
+          node --check app/static/app.js
+          node --check app/static/ui.js
+      - name: Verify timestamp coverage
+        run: |
+          grep -Fq "const NAS_TIME_ZONE='America/Indiana/Indianapolis';" app/static/app.js
+          grep -Fq "Intl.RelativeTimeFormat" app/static/app.js
+          grep -Fq "homeLastScan').textContent=fmtTime" app/static/ui.js
+          grep -Fq "esc(fmtTime(scan.finished_at||scan.started_at)||'Never')" app/static/app.js
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/static/app.js app/static/ui.js
+          git diff --cached --quiet && exit 0
+          git commit -m "Show relative and exact NAS timestamps"
+          git push
