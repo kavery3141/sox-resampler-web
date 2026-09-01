@@ -4,7 +4,7 @@ ARG SOX_SOURCE_COMMIT=0be259eaa9ce3f3fa587a3ef0cf2c0b9c73167a2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates git build-essential autoconf automake libtool pkg-config patch \
+       ca-certificates git build-essential autoconf automake libtool pkg-config \
        libflac-dev libogg-dev libvorbis-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -13,11 +13,18 @@ RUN git clone https://github.com/mansr/sox.git source \
     && cd source \
     && git checkout "$SOX_SOURCE_COMMIT" \
     && test "$(git rev-parse HEAD)" = "$SOX_SOURCE_COMMIT"
-COPY patches/sox-ultra37.patch /build/sox-ultra37.patch
+
+# Stock SoX's development rate effect accepts a custom bit-accuracy request with -d,
+# but artificially caps the parser/assert at 33 bits. The foobar component exposes
+# Ultra 37, so make only those two guarded limit changes while retaining the same
+# double-precision SoX rate implementation.
 RUN cd /build/source \
-    && patch -p1 < /build/sox-ultra37.patch \
-    && grep -q "bits <= 53" src/rate.c \
-    && grep -q "bit_depth, 15, 53" src/rate.c \
+    && test "$(grep -Fc 'assert(!bits || (15 <= bits && bits <= 33));' src/rate.c)" = "1" \
+    && test "$(grep -Fc "GETOPT_NUMERIC(optstate, 'd', bit_depth, 15, 33)" src/rate.c)" = "1" \
+    && sed -i 's/assert(!bits || (15 <= bits && bits <= 33));/assert(!bits || (15 <= bits \&\& bits <= 53));/' src/rate.c \
+    && sed -i "s/GETOPT_NUMERIC(optstate, 'd', bit_depth, 15, 33)/GETOPT_NUMERIC(optstate, 'd', bit_depth, 15, 53)/" src/rate.c \
+    && grep -Fq 'assert(!bits || (15 <= bits && bits <= 53));' src/rate.c \
+    && grep -Fq "GETOPT_NUMERIC(optstate, 'd', bit_depth, 15, 53)" src/rate.c \
     && autoreconf -fi \
     && ./configure --prefix=/opt/sox-ultra --disable-shared --enable-static \
     && make -j"$(nproc)" \
