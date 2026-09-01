@@ -187,3 +187,7 @@ loadLibraryFilters();
 if(window.matchMedia){window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if((localStorage.getItem(APPEARANCE_THEME_KEY)||'system')==='system')applyAppearance()})}
 loadHome();
 render();
+
+const issuesUiScript=document.createElement('script');
+issuesUiScript.src='/static/issues-ui.js';
+document.body.appendChild(issuesUiScript);
