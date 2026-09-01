@@ -7,12 +7,15 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import psutil
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
+from .job_maintenance import clear_terminal_history, history_summary
+from .operations_log import log_disk_usage, recent_events, record_event
 from .storage_health import zfs_pool_health
 
 DEFAULT_RESERVE_BYTES = 10 * 1024**3
@@ -32,6 +35,10 @@ class StorageSettingsRequest(BaseModel):
 class ExclusionPreviewRequest(BaseModel):
     exclude_paths: list[str] = Field(default_factory=list, max_length=250)
     exclude_globs: list[str] = Field(default_factory=list, max_length=250)
+
+
+class ConfirmMaintenanceRequest(BaseModel):
+    confirmed: bool = False
 
 
 def _tool_version(command: list[str]) -> str | None:
@@ -96,7 +103,7 @@ def _preview_exclusions(music_root: Path, exact: list[str], globs: list[str]) ->
                 continue
             if _excluded(child, music_root, exact_set, globs):
                 folder_count += 1
-                for subroot, _, subfiles in os.walk(child, followlinks=False):
+                for _, _, subfiles in os.walk(child, followlinks=False):
                     flac_count += sum(1 for name in subfiles if name.lower().endswith(".flac") and not name.startswith("."))
                 continue
             kept.append(dirname)
@@ -203,6 +210,10 @@ def build_admin_router(
     recovery_status: Callable[[], list[dict[str, str]]],
 ) -> APIRouter:
     router = APIRouter()
+    tz = ZoneInfo(timezone)
+
+    def event_time() -> str:
+        return datetime.now(tz).isoformat(timespec="seconds")
 
     @router.get("/api/settings")
     def get_settings() -> dict[str, Any]:
@@ -224,6 +235,7 @@ def build_admin_router(
         if not request.enabled and job_manager.is_running():
             raise HTTPException(status_code=409, detail="Cannot disable Read-only Scan Mode while a conversion job is active")
         db.set_setting(db_path, "read_only_mode", bool(request.enabled))
+        record_event(db_path, event_time(), "read_only_mode_changed", {"enabled": bool(request.enabled)})
         return {"read_only_mode": bool(request.enabled)}
 
     @router.post("/api/settings/storage")
@@ -238,6 +250,12 @@ def build_admin_router(
         db.set_setting(db_path, "free_space_reserve_bytes", reserve)
         db.set_setting(db_path, "exclude_paths", exact)
         db.set_setting(db_path, "exclude_globs", globs)
+        record_event(
+            db_path,
+            event_time(),
+            "storage_settings_changed",
+            {"free_space_reserve_bytes": reserve, "exclude_paths": len(exact), "exclude_globs": len(globs)},
+        )
         return {
             "free_space_reserve_bytes": reserve,
             "free_space_reserve_gb": round(reserve / 1024**3, 3),
@@ -308,6 +326,9 @@ def build_admin_router(
                 "shm_bytes": shm.stat().st_size if shm.exists() else 0,
             },
             "library": db.library_summary(db_path),
+            "history": history_summary(db_path),
+            "logs": log_disk_usage(data_root),
+            "maintenance_events": recent_events(db_path, 25),
             "latest_scan": db.latest_scan(db_path),
             "scan": scanner.snapshot(),
             "conversion_running": bool(job_manager.is_running()),
@@ -332,11 +353,15 @@ def build_admin_router(
         with sqlite3.connect(db_path, timeout=30) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.execute("VACUUM")
-        return {"ok": True, "size_bytes": db_path.stat().st_size if db_path.exists() else 0}
+        result = {"ok": True, "size_bytes": db_path.stat().st_size if db_path.exists() else 0}
+        record_event(db_path, event_time(), "database_vacuum", result)
+        return result
 
     @router.post("/api/maintenance/full-rescan")
     def full_rescan() -> dict[str, Any]:
-        return scan_async("full")
+        result = scan_async("full")
+        record_event(db_path, event_time(), "full_rescan_requested", {})
+        return result
 
     @router.post("/api/maintenance/rebuild-index")
     def rebuild_index() -> dict[str, Any]:
@@ -344,6 +369,18 @@ def build_admin_router(
             raise HTTPException(status_code=409, detail="Index rebuild waits until conversion and scanning are idle")
         with db.session(db_path) as conn:
             conn.execute("DELETE FROM tracks")
-        return scan_async("full")
+        result = scan_async("full")
+        record_event(db_path, event_time(), "index_rebuild_requested", {})
+        return result
+
+    @router.post("/api/maintenance/history/clear")
+    def clear_history(request: ConfirmMaintenanceRequest) -> dict[str, Any]:
+        if not request.confirmed:
+            raise HTTPException(status_code=400, detail="Clearing terminal conversion history requires explicit confirmation")
+        if job_manager.is_running():
+            raise HTTPException(status_code=409, detail="Conversion history cannot be cleared while a job is active")
+        result = clear_terminal_history(db_path)
+        record_event(db_path, event_time(), "conversion_history_cleared", result)
+        return {**result, "history": history_summary(db_path)}
 
     return router
