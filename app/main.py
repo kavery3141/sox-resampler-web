@@ -17,9 +17,11 @@ from . import db
 from .admin import build_admin_router
 from .converter import recover_pending_transactions
 from .issues import build_metadata_issues, filter_issues, render_issues_csv, render_issues_txt
+from .job_maintenance import RetrySpecError, failed_retry_spec, prune_job_history
 from .jobs import ConversionJobManager, JobError
+from .operations_log import configure_file_logging, record_event
 from .profile_store import get_profile as get_stored_profile, list_all_profiles
-from .profiles import apply_profile_override
+from .profiles import ResampleProfile, apply_profile_override
 from .profiles_api import build_profiles_router
 from .reports import (
     load_job_report,
@@ -32,7 +34,7 @@ from .review import build_batch_review
 from .scanner import LibraryScanner
 from .storage_health import zfs_pool_health
 
-APP_VERSION = "0.6.0-dev"
+APP_VERSION = "0.7.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
@@ -65,6 +67,11 @@ class BatchReviewRequest(BaseModel):
 
 
 class BatchStartRequest(BatchReviewRequest):
+    acknowledged_replace_in_place: bool = False
+
+
+class RetryStartRequest(BaseModel):
+    workers: int = 1
     acknowledged_replace_in_place: bool = False
 
 
@@ -109,34 +116,18 @@ app.include_router(build_profiles_router(DB_PATH))
 
 def _daily_scan() -> None:
     # Discovery only. Conversion is intentionally never launched by a schedule.
-    if not scanner.snapshot()["running"] and not job_manager.is_running():
-        executor.submit(scanner.run, "incremental")
+    if scanner.snapshot()["running"] or job_manager.is_running():
+        return
+    retention = prune_job_history(DB_PATH, TIMEZONE)
+    if retention["deleted_jobs"]:
+        record_event(DB_PATH, job_manager._now(), "history_retention_prune", retention)
+    executor.submit(scanner.run, "incremental")
 
 
-def _review(request: BatchReviewRequest) -> dict[str, Any]:
-    cleaned_rates = sorted({r for r in request.rates if 8000 <= r <= 768000})
-    if request.above is not None and not 0 <= request.above <= 768000:
-        raise HTTPException(status_code=400, detail="Invalid above sample rate")
-    try:
-        stored_profile = get_stored_profile(DB_PATH, request.profile_id)
-        profile = apply_profile_override(stored_profile, request.profile_override)
-        reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
-        review = build_batch_review(
-            DB_PATH,
-            MUSIC_ROOT,
-            [a.model_dump() for a in request.albums],
-            cleaned_rates,
-            request.above,
-            profile,
-            request.workers,
-            reserve,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+def _apply_operational_review_checks(review: dict[str, Any], reserve: int) -> dict[str, Any]:
     usage = psutil.disk_usage(str(MUSIC_ROOT)) if MUSIC_ROOT.exists() else None
     free_bytes = usage.free if usage else 0
-    required = review["estimated_peak_temp_bytes"] + reserve
+    required = int(review["estimated_peak_temp_bytes"]) + reserve
     review["free_bytes"] = free_bytes
     review["free_space_ok"] = free_bytes >= required
     review["required_free_bytes"] = required
@@ -165,6 +156,78 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
     return review
 
 
+def _review_resolved(
+    *,
+    albums: list[dict[str, str]],
+    rates: list[int],
+    above: int | None,
+    profile: ResampleProfile,
+    workers: int,
+    include_paths: set[str] | None = None,
+) -> dict[str, Any]:
+    cleaned_rates = sorted({int(r) for r in rates if 8000 <= int(r) <= 768000})
+    if above is not None and not 0 <= int(above) <= 768000:
+        raise HTTPException(status_code=400, detail="Invalid above sample rate")
+    reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
+    try:
+        review = build_batch_review(
+            DB_PATH,
+            MUSIC_ROOT,
+            albums,
+            cleaned_rates,
+            int(above) if above is not None else None,
+            profile,
+            workers,
+            reserve,
+            include_paths=include_paths,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _apply_operational_review_checks(review, reserve)
+
+
+def _review(request: BatchReviewRequest) -> dict[str, Any]:
+    try:
+        stored_profile = get_stored_profile(DB_PATH, request.profile_id)
+        profile = apply_profile_override(stored_profile, request.profile_override)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _review_resolved(
+        albums=[a.model_dump() for a in request.albums],
+        rates=request.rates,
+        above=request.above,
+        profile=profile,
+        workers=request.workers,
+    )
+
+
+def _retry_review(job_id: int, workers: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    if workers not in (1, 2):
+        raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
+    try:
+        spec = failed_retry_spec(DB_PATH, job_id)
+    except RetrySpecError as exc:
+        detail = str(exc)
+        status_code = 404 if detail == "Job not found" else 409
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    review = _review_resolved(
+        albums=spec["albums"],
+        rates=spec["rates"],
+        above=spec["above"],
+        profile=spec["profile"],
+        workers=workers,
+        include_paths=set(spec["paths"]),
+    )
+    review["retry"] = {
+        "source_job_id": job_id,
+        "failed_files": len(spec["paths"]),
+        "exact_paths": list(spec["paths"]),
+        "original_workers": spec["original_workers"],
+        "original_failures": spec["failures"],
+    }
+    return review, spec
+
+
 def _attachment(content: str, media_type: str, filename: str) -> Response:
     return Response(
         content=content,
@@ -177,8 +240,14 @@ def _attachment(content: str, media_type: str, filename: str) -> Response:
 def startup() -> None:
     global recovery_status
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    configure_file_logging(DATA_ROOT)
     recovery_status = recover_pending_transactions(DATA_ROOT)
     db.init(DB_PATH)
+    retention = prune_job_history(DB_PATH, TIMEZONE)
+    if retention["deleted_jobs"]:
+        record_event(DB_PATH, job_manager._now(), "history_retention_prune", retention)
+    for item in recovery_status:
+        record_event(DB_PATH, job_manager._now(), "transaction_recovery", item)
     if not scheduler.running:
         scheduler.add_job(
             _daily_scan,
@@ -383,6 +452,46 @@ def conversion_job(job_id: int) -> dict[str, Any]:
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/convert/jobs/{job_id}/retry-review")
+def retry_failed_review(job_id: int, workers: int = Query(default=1, ge=1, le=2)) -> dict[str, Any]:
+    review, _ = _retry_review(job_id, workers)
+    return review
+
+
+@app.post("/api/convert/jobs/{job_id}/retry-start")
+def retry_failed_start(job_id: int, request: RetryStartRequest) -> dict[str, Any]:
+    if not request.acknowledged_replace_in_place:
+        raise HTTPException(status_code=400, detail="In-place replacement acknowledgment is required")
+    review, spec = _retry_review(job_id, request.workers)
+    if not review["can_start"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Retry preflight failed", "blockers": review["blockers"]},
+        )
+    source_filter = {
+        "rates": spec["rates"],
+        "above": spec["above"],
+        "retry_of_job_id": job_id,
+        "exact_failed_files": len(spec["paths"]),
+    }
+    try:
+        new_job_id = job_manager.create_job(
+            review,
+            spec["profile_id"],
+            request.workers,
+            source_filter,
+        )
+        job_manager.start(new_job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "job_id": new_job_id,
+        "status": "running",
+        "retry_of_job_id": job_id,
+        "failed_files": len(spec["paths"]),
+    }
 
 
 @app.get("/api/convert/jobs/{job_id}/report.txt")
