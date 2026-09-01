@@ -1,0 +1,30 @@
+name: One-shot CPU cap correction
+
+on:
+  push:
+    paths:
+      - tools/one_shot_cpu_cap_fix.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply CPU cap correction
+        run: python tools/one_shot_cpu_cap_fix.py
+      - name: Commit corrected implementation
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/converter.py app/review.py tests/test_cpu_limit.py tests/test_converter_integration.py
+          git commit -m "Fix CPU limiter process control"
+          git push
