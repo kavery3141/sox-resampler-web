@@ -47,6 +47,7 @@ def _issue(
     tracks: list[dict[str, Any]],
     affected: list[dict[str, Any]],
     summary: str,
+    folders: list[str] | None = None,
 ) -> dict[str, Any]:
     artist, album = _display_album(tracks)
     return {
@@ -55,6 +56,7 @@ def _issue(
         "albumartist": artist,
         "album": album,
         "folder": folder,
+        "folders": sorted(set(folders or ([folder] if folder else [])), key=str.casefold),
         "summary": summary,
         "affected_tracks": affected,
     }
@@ -133,6 +135,82 @@ def build_metadata_issues(db_path: Path) -> list[dict[str, Any]]:
                 f"Non-standard sample rate above 48 kHz detected on {len(oddball)} track(s).",
             ))
 
+    # Cross-folder checks operate on the logical album identity used by the Library and
+    # conversion review: ALBUMARTIST + ALBUM. Folder-local checks above remain important because a
+    # bad ALBUMARTIST/ALBUM value can otherwise split a damaged release into separate logical rows.
+    by_album: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_album[(_text(row.get("albumartist")), _text(row.get("album")))].append(row)
+    for (_albumartist, _album), tracks in sorted(
+        by_album.items(), key=lambda item: (item[0][0].lower(), item[0][1].lower())
+    ):
+        folders = sorted({str(track["folder"]) for track in tracks}, key=str.casefold)
+        if len(folders) < 2:
+            continue
+        for field, tag_name in (
+            ("releasetype", "RELEASETYPE"),
+            ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"),
+        ):
+            values = sorted({_text(track.get(field)) for track in tracks if _text(track.get(field))}, key=str.casefold)
+            if len(values) <= 1:
+                continue
+            affected = [
+                {
+                    "path": track["path"],
+                    "filename": track["filename"],
+                    "value": _track_value(track, field),
+                }
+                for track in tracks
+            ]
+            issues.append(_issue(
+                "blocking",
+                f"inconsistent_{field}_across_folders",
+                folders[0],
+                tracks,
+                affected,
+                f"{tag_name} is inconsistent across {len(folders)} folders in this logical album: {' | '.join(values)}.",
+                folders=folders,
+            ))
+
+    # A MusicBrainz release ID should not point at conflicting ALBUMARTIST/ALBUM identities. Exact
+    # duplicate folders with the same identity remain informational below, because they can be
+    # deliberate. Identity conflicts are blocking and include every affected track/value.
+    mbid_tracks: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        mbid = _text(row.get("musicbrainz_albumid"))
+        if mbid:
+            mbid_tracks[mbid].append(row)
+    conflicting_mbids: set[str] = set()
+    for mbid, tracks in sorted(mbid_tracks.items()):
+        identities = {
+            (_text(track.get("albumartist")), _text(track.get("album")))
+            for track in tracks
+        }
+        if len(identities) <= 1:
+            continue
+        conflicting_mbids.add(mbid)
+        folders = sorted({str(track["folder"]) for track in tracks}, key=str.casefold)
+        affected = [
+            {
+                "path": track["path"],
+                "filename": track["filename"],
+                "value": (
+                    f"ALBUMARTIST={_track_value(track, 'albumartist')}; "
+                    f"ALBUM={_track_value(track, 'album')}; MUSICBRAINZ_ALBUMID={mbid}"
+                ),
+            }
+            for track in tracks
+        ]
+        issues.append(_issue(
+            "blocking",
+            "musicbrainz_albumid_identity_conflict",
+            folders[0] if folders else "",
+            tracks,
+            affected,
+            f"MusicBrainz Album ID {mbid} maps to conflicting ALBUMARTIST/ALBUM identities.",
+            folders=folders,
+        ))
+
     # Duplicate release IDs across different folders are informational; they may be deliberate.
     mbid_folders: dict[str, set[str]] = defaultdict(set)
     for row in rows:
@@ -140,7 +218,7 @@ def build_metadata_issues(db_path: Path) -> list[dict[str, Any]]:
         if mbid:
             mbid_folders[mbid].add(str(row["folder"]))
     for mbid, folders in sorted(mbid_folders.items()):
-        if len(folders) < 2:
+        if len(folders) < 2 or mbid in conflicting_mbids:
             continue
         for folder in sorted(folders):
             tracks = by_folder[folder]
@@ -169,26 +247,34 @@ def filter_issues(issues: list[dict[str, Any]], severity: str | None = None) -> 
 def render_issues_txt(issues: list[dict[str, Any]], timezone: str) -> str:
     out = [f"SoX Resampler Web Metadata Issues ({timezone})", f"Issues: {len(issues)}", ""]
     for issue in issues:
+        folders = issue.get("folders") or ([issue.get("folder", "")] if issue.get("folder") else [])
         out.extend([
             f"[{issue['severity'].upper()}] {issue['albumartist']} / {issue['album']}",
-            f"Path: {issue['folder']}",
+            f"Path{'s' if len(folders) != 1 else ''}: {' | '.join(folders)}",
             f"Issue: {issue['summary']}",
         ])
         for track in issue["affected_tracks"]:
-            out.append(f"  {track['filename']}: {track['value']}")
+            track_path = track.get("path", "")
+            suffix = f" [{track_path}]" if track_path else ""
+            out.append(f"  {track['filename']}: {track['value']}{suffix}")
         out.append("")
     return "\n".join(out)
-
 
 def render_issues_csv(issues: list[dict[str, Any]]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["severity", "issue_type", "albumartist", "album", "folder", "track", "current_value", "summary"])
+    writer.writerow([
+        "severity", "issue_type", "albumartist", "album", "folder", "path",
+        "track", "current_value", "summary",
+    ])
     for issue in issues:
-        affected = issue["affected_tracks"] or [{"filename": "", "value": ""}]
+        affected = issue["affected_tracks"] or [{"filename": "", "value": "", "path": ""}]
         for track in affected:
+            track_path = str(track.get("path", ""))
+            folder = str(Path(track_path).parent) if track_path else issue.get("folder", "")
             writer.writerow([
                 issue["severity"], issue["issue_type"], issue["albumartist"], issue["album"],
-                issue["folder"], track.get("filename", ""), track.get("value", ""), issue["summary"],
+                folder, track_path, track.get("filename", ""), track.get("value", ""), issue["summary"],
             ])
     return buffer.getvalue()
+

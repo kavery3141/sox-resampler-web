@@ -101,21 +101,25 @@ function issueMatches(issue){
   if(issueUiState.severity!=='all'&&issue.severity!==issueUiState.severity)return false;
   if(!issueUiState.query)return true;
   const tracks=(issue.affected_tracks||[]).map(t=>`${t.filename||''} ${t.path||''} ${t.value||''}`).join(' ');
-  return `${issue.albumartist||''} ${issue.album||''} ${issue.folder||''} ${issue.summary||''} ${issue.issue_type||''} ${tracks}`.toLowerCase().includes(issueUiState.query);
+  const folders=(issue.folders||[]).join(' ');
+  return `${issue.albumartist||''} ${issue.album||''} ${issue.folder||''} ${folders} ${issue.summary||''} ${issue.issue_type||''} ${tracks}`.toLowerCase().includes(issueUiState.query);
 }
 
 function renderIssues(){
   const rows=issueUiState.issues.filter(issueMatches);
   const box=$('issueRows');
   if(!rows.length){box.innerHTML='<section class="card"><div class="muted">No metadata issues match the current filter.</div></section>';return}
-  box.innerHTML=rows.map((issue,index)=>`
+  box.innerHTML=rows.map((issue,index)=>{
+    const folders=(issue.folders||[]).length?issue.folders:[issue.folder].filter(Boolean);
+    return `
     <section class="card issueCard" data-issue-index="${index}">
       <div class="issueHead"><span class="statusPill ${esc(issue.severity)}">${esc(issue.severity)}</span><div class="issueHeadMain"><div class="issueArtist">${esc(issue.albumartist||'Missing Album Artist')}</div><div class="issueAlbum">${esc(issue.album||'Missing Album')}</div><div class="issueSummaryText">${esc(issue.summary||'')}</div><div class="issueType">${esc(issue.issue_type||'')}</div></div></div>
-      <div class="issueFolder"><span class="muted">Folder</span><code>${esc(issue.folder||'')}</code><button data-copy-folder="${index}">Copy Path</button></div>
+      ${folders.map((folder,folderIndex)=>`<div class="issueFolder"><span class="muted">${folders.length===1?'Folder':`Folder ${folderIndex+1}`}</span><code>${esc(folder)}</code><button data-copy-folder="${index}:${folderIndex}">Copy Path</button></div>`).join('')}
       <div class="issueTracks">${(issue.affected_tracks||[]).map((track,trackIndex)=>`<div class="issueTrack"><code>${esc(track.filename||track.path||'Unknown track')}</code><span>${esc(track.value||'')}</span><button data-copy-track="${index}:${trackIndex}">Copy Track Path</button></div>`).join('')}</div>
-    </section>`).join('');
+    </section>`;
+  }).join('');
 
-  box.querySelectorAll('[data-copy-folder]').forEach(button=>button.onclick=()=>{const issue=rows[Number(button.dataset.copyFolder)];navigator.clipboard?.writeText(issue.folder||'')});
+  box.querySelectorAll('[data-copy-folder]').forEach(button=>button.onclick=()=>{const [i,f]=button.dataset.copyFolder.split(':').map(Number);const issue=rows[i];const folders=(issue?.folders||[]).length?issue.folders:[issue?.folder].filter(Boolean);navigator.clipboard?.writeText(folders[f]||'')});
   box.querySelectorAll('[data-copy-track]').forEach(button=>button.onclick=()=>{const [i,t]=button.dataset.copyTrack.split(':').map(Number);const track=rows[i]?.affected_tracks?.[t];navigator.clipboard?.writeText(track?.path||'')});
 }
 

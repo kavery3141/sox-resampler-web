@@ -125,6 +125,23 @@ def build_batch_review(
     seen_exact_paths: set[str] = set()
 
     with db.session(db_path) as conn:
+        mbid_identity_rows = conn.execute(
+            """
+            SELECT
+              TRIM(musicbrainz_albumid) mbid,
+              COALESCE(TRIM(albumartist),'') albumartist,
+              COALESCE(TRIM(album),'') album
+            FROM tracks
+            WHERE musicbrainz_albumid IS NOT NULL AND TRIM(musicbrainz_albumid)<>''
+            GROUP BY mbid,albumartist,album
+            """
+        ).fetchall()
+        mbid_identities: dict[str, set[tuple[str, str]]] = {}
+        for item in mbid_identity_rows:
+            mbid_identities.setdefault(str(item["mbid"]), set()).add(
+                (str(item["albumartist"]), str(item["album"]))
+            )
+
         for key in album_keys:
             albumartist = key.get("albumartist", "")
             album = key.get("album", "")
@@ -145,6 +162,41 @@ def build_batch_review(
             album_warnings: list[str] = []
             album_blockers: list[str] = []
             matching = 0
+
+            indexed_items = [dict(row) for row in rows]
+            for field, tag_name in KEY_TAGS:
+                values = sorted({
+                    str(item.get(field) or "").strip()
+                    for item in indexed_items
+                    if str(item.get(field) or "").strip()
+                }, key=str.casefold)
+                missing_count = sum(
+                    1 for item in indexed_items if not str(item.get(field) or "").strip()
+                )
+                if missing_count:
+                    album_blockers.append(
+                        f"{tag_name} missing on {missing_count} indexed track(s) across logical album"
+                    )
+                if len(values) > 1:
+                    album_blockers.append(
+                        f"{tag_name} inconsistent across logical album: {' | '.join(values)}"
+                    )
+
+            selected_mbids = sorted({
+                str(item.get("musicbrainz_albumid") or "").strip()
+                for item in indexed_items
+                if str(item.get("musicbrainz_albumid") or "").strip()
+            })
+            for mbid in selected_mbids:
+                identities = mbid_identities.get(mbid, set())
+                if len(identities) > 1:
+                    identity_text = "; ".join(
+                        f"{artist or '<missing>'} / {title or '<missing>'}"
+                        for artist, title in sorted(identities, key=lambda value: (value[0].casefold(), value[1].casefold()))
+                    )
+                    album_blockers.append(
+                        f"MUSICBRAINZ_ALBUMID {mbid} maps to conflicting ALBUMARTIST/ALBUM identities in the index: {identity_text}"
+                    )
 
             folder_counts: dict[str, int] = {}
             for row in rows:

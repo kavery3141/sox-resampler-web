@@ -144,6 +144,65 @@ class CandidateAlbumsTests(unittest.TestCase):
             self.assertEqual(album["folder_count"], 2)
             self.assertEqual(album["folders"], sorted(folders, key=str.casefold))
 
+    def test_cross_folder_releasetype_conflict_blocks_logical_album(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.db"
+            db.init(db_path)
+            for index, (folder, releasetype) in enumerate((
+                ("/music/Test Artist/Test Album/Disc 1", "album"),
+                ("/music/Test Artist/Test Album/Disc 2", "album; compilation"),
+            ), start=1):
+                self._insert_track(
+                    db_path,
+                    path=f"{folder}/01.flac",
+                    folder=folder,
+                    rate=96000,
+                    size=1000,
+                    tracknumber=str(index),
+                    releasetype=releasetype,
+                )
+
+            rows = db.candidate_albums(db_path, [96000], above=None)
+            self.assertEqual(len(rows), 1)
+            self.assertFalse(rows[0]["selectable"])
+            self.assertIn(
+                "RELEASETYPE missing or inconsistent across logical album",
+                rows[0]["blockers"],
+            )
+
+    def test_shared_mbid_with_conflicting_album_identity_blocks_each_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.db"
+            db.init(db_path)
+            self._insert_track(
+                db_path,
+                path="/music/Test Artist/Test Album/01.flac",
+                folder="/music/Test Artist/Test Album",
+                rate=96000,
+                size=1000,
+                tracknumber="1",
+                mbid="shared-mbid",
+            )
+            self._insert_track(
+                db_path,
+                path="/music/Other Artist/Other Album/01.flac",
+                folder="/music/Other Artist/Other Album",
+                rate=96000,
+                size=1000,
+                tracknumber="1",
+                albumartist="Other Artist",
+                album="Other Album",
+                mbid="shared-mbid",
+            )
+
+            rows = db.candidate_albums(db_path, [96000], above=None)
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(not row["selectable"] for row in rows))
+            self.assertTrue(all(
+                any("maps to conflicting ALBUMARTIST/ALBUM values" in blocker for blocker in row["blockers"])
+                for row in rows
+            ))
+
     def test_inconsistent_critical_tag_in_folder_blocks_candidate_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "library.db"

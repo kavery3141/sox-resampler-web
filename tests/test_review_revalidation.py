@@ -90,6 +90,50 @@ class ReviewRevalidationTest(unittest.TestCase):
         text = " | ".join(review["blockers"])
         self.assertIn("Album track count changed since scan", text)
 
+    def test_cross_folder_releasetype_conflict_blocks_start(self) -> None:
+        second_folder = self.folder / "Disc 2"
+        second_folder.mkdir()
+        second = second_folder / "02 - Conflict.flac"
+        second.write_bytes(self.track.read_bytes())
+        audio = FLAC(second)
+        audio["TRACKNUMBER"] = ["2"]
+        audio["DISCNUMBER"] = ["2"]
+        audio["RELEASETYPE"] = ["album; compilation"]
+        audio.save()
+        refresh_track(
+            self.db_path,
+            self.music,
+            second,
+            "America/Indiana/Indianapolis",
+        )
+
+        review = self.review()
+        self.assertFalse(review["can_start"])
+        self.assertIn("RELEASETYPE inconsistent across logical album", " | ".join(review["blockers"]))
+
+    def test_shared_mbid_with_conflicting_identity_blocks_start(self) -> None:
+        other_folder = self.music / "Other Artist" / "Other Album"
+        other_folder.mkdir(parents=True)
+        other = other_folder / "01 - Other.flac"
+        other.write_bytes(self.track.read_bytes())
+        audio = FLAC(other)
+        audio["ALBUMARTIST"] = ["Other Artist"]
+        audio["ALBUM"] = ["Other Album"]
+        audio["TRACKNUMBER"] = ["1"]
+        audio.save()
+        refresh_track(
+            self.db_path,
+            self.music,
+            other,
+            "America/Indiana/Indianapolis",
+        )
+
+        review = self.review()
+        self.assertFalse(review["can_start"])
+        text = " | ".join(review["blockers"])
+        self.assertIn("maps to conflicting ALBUMARTIST/ALBUM identities", text)
+        self.assertIn("Other Artist / Other Album", text)
+
     def test_exact_path_retry_review_does_not_pull_other_matching_tracks(self) -> None:
         second = self.folder / "02 - Also High Rate.flac"
         second.write_bytes(self.track.read_bytes())

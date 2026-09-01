@@ -234,11 +234,48 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
             """
         ).fetchall()
 
+        album_health_rows = db.execute(
+            """
+            SELECT
+              COALESCE(albumartist,'') albumartist,
+              COALESCE(album,'') album,
+              SUM(CASE WHEN releasetype IS NULL OR TRIM(releasetype)='' THEN 1 ELSE 0 END) missing_releasetype,
+              COUNT(DISTINCT NULLIF(TRIM(releasetype),'')) releasetype_values,
+              SUM(CASE WHEN musicbrainz_albumid IS NULL OR TRIM(musicbrainz_albumid)='' THEN 1 ELSE 0 END) missing_mbid,
+              COUNT(DISTINCT NULLIF(TRIM(musicbrainz_albumid),'')) mbid_values
+            FROM tracks
+            GROUP BY albumartist,album
+            """
+        ).fetchall()
+        mbid_identity_rows = db.execute(
+            """
+            SELECT
+              TRIM(musicbrainz_albumid) mbid,
+              COALESCE(TRIM(albumartist),'') albumartist,
+              COALESCE(TRIM(album),'') album
+            FROM tracks
+            WHERE musicbrainz_albumid IS NOT NULL AND TRIM(musicbrainz_albumid)<>''
+            GROUP BY mbid,albumartist,album
+            """
+        ).fetchall()
+
     album_folders: dict[tuple[str, str], list[str]] = {}
     for item in album_folder_rows:
         key = (str(item["albumartist"]), str(item["album"]))
         album_folders.setdefault(key, []).append(str(item["folder"]))
     folder_health = {str(row["folder"]): dict(row) for row in folder_health_rows}
+    album_health = {
+        (str(row["albumartist"]), str(row["album"])): dict(row)
+        for row in album_health_rows
+    }
+    mbid_identities: dict[str, set[tuple[str, str]]] = {}
+    for item in mbid_identity_rows:
+        mbid_identities.setdefault(str(item["mbid"]), set()).add(
+            (str(item["albumartist"]), str(item["album"]))
+        )
+    conflicting_mbids = {
+        mbid for mbid, identities in mbid_identities.items() if len(identities) > 1
+    }
 
     def any_folder_problem(folders: list[str], missing_field: str, values_field: str) -> bool:
         for folder in folders:
@@ -255,6 +292,17 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
         row["folder_count"] = len(folders)
         if folders:
             row["folder"] = folders[0]
+        logical_health = album_health.get((str(row["albumartist"]), str(row["album"])), {})
+        if logical_health.get("missing_releasetype") or logical_health.get("releasetype_values") != 1:
+            blockers.append("RELEASETYPE missing or inconsistent across logical album")
+        if logical_health.get("missing_mbid") or logical_health.get("mbid_values") != 1:
+            blockers.append("MUSICBRAINZ_ALBUMID missing or inconsistent across logical album")
+        row_mbids = [value.strip() for value in str(row.get("mbids") or "").split(",") if value.strip()]
+        for mbid in row_mbids:
+            if mbid in conflicting_mbids:
+                blockers.append(
+                    f"MUSICBRAINZ_ALBUMID {mbid} maps to conflicting ALBUMARTIST/ALBUM values"
+                )
         if any_folder_problem(folders, "missing_albumartist", "albumartist_values"):
             blockers.append("ALBUMARTIST missing or inconsistent")
         if any_folder_problem(folders, "missing_album", "album_values"):
@@ -267,7 +315,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
             blockers.append("Multichannel FLAC requires review")
         if row["replaygain_incomplete"]:
             warnings.append("ReplayGain incomplete")
-        row["blockers"] = blockers
+        row["blockers"] = list(dict.fromkeys(blockers))
         row["warnings"] = warnings
         row["selectable"] = not blockers
         row["source_rates"] = sorted(int(x) for x in (row["source_rates"] or "").split(",") if x)
