@@ -1,3 +1,30 @@
+const ALBUM_THUMBNAIL_PREF_KEY='sox-resampler-cover-thumbnails';
+
+function albumThumbnailsEnabled(){
+  return localStorage.getItem(ALBUM_THUMBNAIL_PREF_KEY)!=='hidden';
+}
+function applyAlbumThumbnailPreference(){
+  const enabled=albumThumbnailsEnabled();
+  document.body.dataset.coverThumbnails=enabled?'shown':'hidden';
+  const input=document.getElementById('coverThumbnailPreference');
+  if(input)input.checked=enabled;
+}
+function installAlbumThumbnailPreference(){
+  const grid=document.querySelector('#settingsView .appearanceGrid');
+  if(!grid||document.getElementById('coverThumbnailPreference'))return;
+  const label=document.createElement('label');
+  label.className='thumbnailPreference';
+  label.innerHTML='<span>Library covers</span><span class="thumbnailPreferenceControl"><input id="coverThumbnailPreference" type="checkbox"> Show cover thumbnails in Comfortable layout</span>';
+  grid.appendChild(label);
+  const input=document.getElementById('coverThumbnailPreference');
+  input.checked=albumThumbnailsEnabled();
+  input.addEventListener('change',()=>{
+    localStorage.setItem(ALBUM_THUMBNAIL_PREF_KEY,input.checked?'shown':'hidden');
+    applyAlbumThumbnailPreference();
+    render();
+  });
+}
+
 function albumThumbnailPlaceholder(){
   const placeholder=document.createElement('div');
   placeholder.className='albumThumb albumThumbPlaceholder';
@@ -28,6 +55,7 @@ function albumThumbnailNode(album){
 }
 
 function decorateAlbumThumbnails(){
+  if(!albumThumbnailsEnabled())return;
   for(const row of document.querySelectorAll('#results .row[data-key]')){
     const key=decodeURIComponent(row.dataset.key||'');
     const album=state.albums.find(item=>selectedKey(item)===key);
@@ -53,6 +81,10 @@ function decorateAlbumThumbnails(){
     .albumThumbPlaceholderInset:after{content:'';position:absolute;left:6px;right:6px;bottom:7px;height:8px;border-left:1px solid var(--border);border-bottom:1px solid var(--border);transform:skewY(-28deg)}
     body[data-density='compact'] .albumCellWithThumb{display:block}
     body[data-density='compact'] .albumThumb{display:none}
+    body[data-cover-thumbnails='hidden'] .albumCellWithThumb{display:block}
+    body[data-cover-thumbnails='hidden'] .albumThumb{display:none}
+    .thumbnailPreference{display:flex;flex-direction:column;gap:6px}
+    .thumbnailPreferenceControl{display:flex;align-items:center;gap:8px;font-weight:400;color:var(--text)}
   `;
   document.head.appendChild(style);
 })();
@@ -60,7 +92,10 @@ function decorateAlbumThumbnails(){
 const albumThumbnailBaseRender=render;
 render=function(){
   albumThumbnailBaseRender();
+  applyAlbumThumbnailPreference();
   decorateAlbumThumbnails();
 };
 
+installAlbumThumbnailPreference();
+applyAlbumThumbnailPreference();
 decorateAlbumThumbnails();
