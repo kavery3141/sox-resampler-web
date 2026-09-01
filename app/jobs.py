@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from . import db
 from .converter import convert_file
 from .index_update import refresh_track
-from .profiles import get_profile
+from .profiles import ResampleProfile, get_profile, profile_from_dict
 from .storage_health import zfs_pool_health
 
 
@@ -36,6 +36,7 @@ def ensure_tables(db_path: Path) -> None:
                 finished_at TEXT,
                 status TEXT NOT NULL,
                 profile_id TEXT NOT NULL,
+                profile_json TEXT,
                 workers INTEGER NOT NULL,
                 source_filter_json TEXT NOT NULL,
                 album_order_json TEXT NOT NULL,
@@ -67,6 +68,9 @@ def ensure_tables(db_path: Path) -> None:
               ON conversion_files(job_id,status,album_index,file_index);
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversion_jobs)").fetchall()}
+        if "profile_json" not in columns:
+            conn.execute("ALTER TABLE conversion_jobs ADD COLUMN profile_json TEXT")
 
 
 def recover_interrupted(db_path: Path, timezone: str) -> None:
@@ -142,6 +146,13 @@ class ConversionJobManager:
             raise JobError("Workers must be 1 or 2")
         if review.get("blockers") or not review.get("can_start"):
             raise JobError("Batch review contains blockers")
+        profile_payload = review.get("profile")
+        if not isinstance(profile_payload, dict):
+            raise JobError("Batch review is missing the resolved DSP profile")
+        try:
+            resolved_profile = profile_from_dict(profile_payload)
+        except ValueError as exc:
+            raise JobError(f"Batch review contains an invalid DSP profile: {exc}") from exc
         album_order = [
             {"albumartist": a["albumartist"], "album": a["album"], "folder": a["folder"]}
             for a in review["albums"]
@@ -150,11 +161,15 @@ class ConversionJobManager:
             cur = conn.execute(
                 """
                 INSERT INTO conversion_jobs(
-                  created_at,status,profile_id,workers,source_filter_json,album_order_json
-                ) VALUES(?,?,?,?,?,?)
+                  created_at,status,profile_id,profile_json,workers,source_filter_json,album_order_json
+                ) VALUES(?,?,?,?,?,?,?)
                 """,
                 (
-                    self._now(), "queued", profile_id, workers,
+                    self._now(),
+                    "queued",
+                    profile_id,
+                    json.dumps(resolved_profile.to_dict(), separators=(",", ":"), sort_keys=True),
+                    workers,
                     json.dumps(source_filter, separators=(",", ":")),
                     json.dumps(album_order, separators=(",", ":")),
                 ),
@@ -238,7 +253,7 @@ class ConversionJobManager:
         job_id: int,
         file_id: int,
         path: str,
-        profile_id: str,
+        profile: ResampleProfile,
         expected_bytes: int,
     ) -> dict[str, Any]:
         source = Path(path)
@@ -260,7 +275,6 @@ class ConversionJobManager:
                     f"rescan/review required: {source}"
                 )
 
-            profile = get_profile(profile_id)
             result = convert_file(source, profile)
             payload = asdict(result)
             finished = self._now()
@@ -310,6 +324,15 @@ class ConversionJobManager:
                 if not job:
                     raise JobError("Job disappeared")
                 profile_id = str(job["profile_id"])
+                raw_profile = job["profile_json"]
+                if raw_profile:
+                    try:
+                        profile = profile_from_dict(json.loads(raw_profile))
+                    except (ValueError, json.JSONDecodeError) as exc:
+                        raise JobError(f"Stored DSP profile snapshot is invalid: {exc}") from exc
+                else:
+                    # Compatibility for jobs created before profile snapshots were introduced.
+                    profile = get_profile(profile_id)
                 album_indices = [
                     r["album_index"] for r in conn.execute(
                         "SELECT DISTINCT album_index FROM conversion_files WHERE job_id=? ORDER BY album_index",
@@ -372,7 +395,7 @@ class ConversionJobManager:
                                 job_id,
                                 r["id"],
                                 r["path"],
-                                profile_id,
+                                profile,
                                 int(r["source_bytes"]),
                             )
                             for r in wave
@@ -461,6 +484,14 @@ class ConversionJobManager:
         total_files = int(total["count"] or 0)
         processed_files = counts.get("completed", 0) + counts.get("failed", 0)
         result = dict(job)
+        if result.get("profile_json"):
+            try:
+                result["profile"] = json.loads(result["profile_json"])
+            except json.JSONDecodeError:
+                result["profile"] = None
+        else:
+            result["profile"] = None
+        result.pop("profile_json", None)
         result["counts"] = counts
         result["bytes_by_status"] = bytes_by_status
         result["total_files"] = total_files
@@ -476,7 +507,9 @@ class ConversionJobManager:
     def recent_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         with db.session(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT * FROM conversion_jobs ORDER BY id DESC LIMIT ?",
+                "SELECT id,created_at,started_at,finished_at,status,profile_id,workers,source_filter_json,album_order_json,"
+                "pause_requested,stop_after_album,cancel_requested,error_text "
+                "FROM conversion_jobs ORDER BY id DESC LIMIT ?",
                 (max(1, min(200, limit)),),
             ).fetchall()
         return [dict(r) for r in rows]
