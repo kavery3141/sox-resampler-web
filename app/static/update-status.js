@@ -65,3 +65,4 @@ loadMaintenance=async function(){
   await updateStatusBaseLoadMaintenance();
   await loadMaintenanceUpdate(false);
 };
+if($('refreshMaintenance'))$('refreshMaintenance').onclick=loadMaintenance;
