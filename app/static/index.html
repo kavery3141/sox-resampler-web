@@ -5,62 +5,62 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SoX Resampler Web</title>
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; background: #0d1420; color: #f5f7fa; }
-    main { max-width: 980px; margin: 0 auto; padding: 32px 20px; }
-    header { display: flex; align-items: center; gap: 18px; margin-bottom: 32px; }
-    .logo { width: 72px; height: 72px; border-radius: 16px; object-fit: cover; }
-    .card { background: #151f2e; border: 1px solid #2a3647; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
-    .muted { color: #aeb8c6; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 14px; }
-    .value { font-size: 1.35rem; font-weight: 700; margin-top: 6px; }
-    .pill { display: inline-block; border: 1px solid #3d4a5c; border-radius: 999px; padding: 6px 10px; margin-right: 8px; }
+    :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;--bg:#0b111b;--panel:#131c29;--panel2:#182332;--border:#2a3748;--text:#f4f7fb;--muted:#9ba9bb;--orange:#ff7900;--warn:#ffbb55;--bad:#ff6b6b;--good:#62d39a}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}button,input{font:inherit}button{border:1px solid var(--border);background:var(--panel2);color:var(--text);border-radius:9px;padding:9px 12px;cursor:pointer}button:hover{border-color:#52647a}button.primary{background:var(--orange);border-color:var(--orange);color:#111;font-weight:700}button:disabled{opacity:.45;cursor:not-allowed}.iconbtn{display:inline-flex;align-items:center;gap:7px}.icon{width:17px;height:17px;display:inline-block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+    header{height:68px;display:flex;align-items:center;border-bottom:1px solid var(--border);padding:0 22px;position:sticky;top:0;background:rgba(11,17,27,.96);z-index:5}.brand{display:flex;align-items:center;gap:12px}.brand img{width:42px;height:42px;border-radius:10px;background:#101b2b}.brand strong{font-size:18px}.brand small{display:block;color:var(--muted);margin-top:2px}nav{margin-left:auto;display:flex;gap:4px}nav button{background:transparent;border-color:transparent;color:var(--muted)}nav button.active{color:var(--text);background:var(--panel2)}
+    main{max-width:1320px;margin:0 auto;padding:22px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.card{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:16px}.summary{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;margin-bottom:18px}.metric span{display:block;color:var(--muted);font-size:12px}.metric strong{font-size:24px;display:block;margin-top:3px}.search{flex:1;min-width:240px;background:#0e1724;color:var(--text);border:1px solid var(--border);border-radius:9px;padding:10px 12px}.ratebox{display:flex;align-items:center;gap:7px;border:1px solid var(--border);border-radius:9px;padding:7px 10px;background:#0e1724}.ratebox label{white-space:nowrap}.muted{color:var(--muted)}.notice{padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:#0e1724;margin-bottom:14px}.notice.warn{border-color:#6b5328;color:#ffd393}.notice.bad{border-color:#733737;color:#ffb0b0}
+    .list{overflow:hidden;padding:0}.row{display:grid;grid-template-columns:42px minmax(280px,1.8fr) 150px 120px 120px 130px;gap:12px;align-items:center;padding:13px 14px;border-bottom:1px solid var(--border)}.row:last-child{border-bottom:0}.row.head{font-size:12px;color:var(--muted);background:#0e1724;padding-top:10px;padding-bottom:10px}.album-title{font-weight:700}.album-artist{color:var(--muted);font-size:13px;margin-bottom:3px}.badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}.badge{font-size:11px;border:1px solid var(--border);border-radius:999px;padding:2px 7px;color:var(--muted)}.badge.warn{color:#ffd393;border-color:#6b5328}.badge.bad{color:#ffb0b0;border-color:#733737}.check{width:18px;height:18px;accent-color:var(--orange)}.selectedTray{position:sticky;bottom:12px;margin-top:16px;background:#111c2a;border:1px solid #46576b;border-radius:13px;padding:12px 14px;display:flex;align-items:center;gap:14px;box-shadow:0 10px 30px rgba(0,0,0,.35)}.selectedTray .spacer{flex:1}.hidden{display:none!important}.spin{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+    @media(max-width:850px){nav{display:none}.summary{grid-template-columns:1fr 1fr}.row{grid-template-columns:36px 1fr 100px}.row>*:nth-child(n+4){display:none}.row.head>*:nth-child(n+4){display:none}}
   </style>
 </head>
 <body>
+<header><div class="brand"><img src="/static/icon.png" alt="SoX Resampler Web"><div><strong>SoX Resampler Web</strong><small>TrueNAS-local FLAC resampling</small></div></div><nav><button class="active">Library</button><button disabled>Convert</button><button disabled>History</button><button disabled>Settings</button><button disabled>Maintenance</button></nav></header>
 <main>
-  <header>
-    <img class="logo" src="/static/icon.png" alt="SoX Resampler Web icon">
-    <div>
-      <h1>SoX Resampler Web</h1>
-      <div class="muted">TrueNAS-local FLAC resampling</div>
+  <section class="summary">
+    <div class="card metric"><span>Indexed FLACs</span><strong id="trackCount">—</strong></div>
+    <div class="card metric"><span>Indexed Albums</span><strong id="albumCount">—</strong></div>
+    <div class="card metric"><span>High-rate Tracks</span><strong id="highCount">—</strong></div>
+    <div class="card metric"><span>NAS CPU</span><strong id="cpuCount">—</strong></div>
+  </section>
+
+  <div id="scanNotice" class="notice hidden"></div>
+
+  <section class="card" style="margin-bottom:14px">
+    <div class="toolbar">
+      <input id="textSearch" class="search" type="search" placeholder="Filter by Album Artist or Album…" autocomplete="off">
+      <div class="ratebox"><input id="r96" type="checkbox" checked><label for="r96">96 kHz</label></div>
+      <div class="ratebox"><input id="r192" type="checkbox" checked><label for="r192">192 kHz</label></div>
+      <div class="ratebox"><input id="above48" type="checkbox"><label for="above48">Any &gt; 48 kHz</label></div>
+      <button id="refreshBtn" class="iconbtn"><svg class="icon" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>Refresh Results</button>
+      <button id="scanBtn" class="iconbtn primary"><svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>Rescan Library</button>
     </div>
-  </header>
-
-  <section class="card">
-    <h2>Initial build</h2>
-    <p>The application shell and health service are running. Library indexing, album selection, conversion, verification, history, settings, and maintenance workflows are being implemented against the project specification.</p>
-    <span class="pill">96 / 192 kHz discovery</span>
-    <span class="pill">48 kHz default target</span>
-    <span class="pill">Preserve bit depth</span>
+    <div class="toolbar" style="margin-bottom:0"><button id="checkAll">Check All</button><button id="uncheckAll">Uncheck All</button><span id="matchCount" class="muted">Loading…</span></div>
   </section>
 
-  <section class="card">
-    <h2>Runtime status</h2>
-    <div id="status" class="grid"><div class="muted">Loading…</div></div>
+  <section class="card list">
+    <div class="row head"><div></div><div>Album</div><div>Source</div><div>Tracks</div><div>Bit depth</div><div>Size</div></div>
+    <div id="results"><div class="row"><div></div><div class="muted">No scan has run yet.</div></div></div>
   </section>
+
+  <section id="tray" class="selectedTray hidden"><strong id="selectedCount">0 albums selected</strong><span id="selectedTracks" class="muted"></span><span id="selectedSize" class="muted"></span><span class="spacer"></span><button id="clearSelected">Clear Selection</button><button class="primary" disabled title="Batch conversion engine is the next implementation milestone">Review Batch</button></section>
 </main>
 <script>
-(async () => {
-  const el = document.getElementById('status');
-  try {
-    const r = await fetch('/api/status');
-    const s = await r.json();
-    const rows = [
-      ['App version', s.app_version],
-      ['CPU', s.cpu_percent + '%'],
-      ['Memory', s.memory_percent + '%'],
-      ['Target rate', s.default_target_rate + ' Hz'],
-      ['FLAC compression', 'Level ' + s.default_flac_compression],
-      ['Workers', s.default_workers + ' (max ' + s.max_workers + ')'],
-      ['Timezone', s.timezone],
-      ['Music root', s.music_root]
-    ];
-    el.innerHTML = rows.map(([k,v]) => `<div><div class="muted">${k}</div><div class="value">${v}</div></div>`).join('');
-  } catch (e) {
-    el.textContent = 'Unable to load runtime status.';
-  }
-})();
+const state={albums:[],selected:new Set()};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtBytes=n=>{if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];let i=0,x=n;while(x>=1024&&i<u.length-1){x/=1024;i++}return `${x.toFixed(i>1?1:0)} ${u[i]}`};
+function selectedKey(a){return `${a.albumartist}\u0000${a.album}\u0000${a.folder}`}
+function activeRates(){const r=[];if($('r96').checked)r.push(96000);if($('r192').checked)r.push(192000);return r}
+async function loadStatus(){try{const s=await fetch('/api/status').then(r=>r.json());$('trackCount').textContent=s.library.tracks.toLocaleString();$('albumCount').textContent=s.library.albums.toLocaleString();$('highCount').textContent=s.library.high_rate_tracks.toLocaleString();$('cpuCount').textContent=`${Math.round(s.cpu_percent)}%`;if(s.scan.running){showScan(`Scanning: ${s.scan.files_seen.toLocaleString()} FLACs seen, ${s.scan.files_read.toLocaleString()} updated`,false)}}catch(e){}}
+function showScan(text,bad=false){const n=$('scanNotice');n.textContent=text;n.classList.remove('hidden','bad');if(bad)n.classList.add('bad')}
+async function loadCandidates(){const p=new URLSearchParams();for(const r of activeRates())p.append('rates',r);if($('above48').checked)p.set('above','48000');try{const data=await fetch('/api/library/candidates?'+p).then(r=>r.json());state.albums=data.albums;render()}catch(e){$('results').innerHTML='<div class="row"><div></div><div class="muted">Unable to load library index.</div></div>'}}
+function filtered(){const q=$('textSearch').value.trim().toLowerCase();if(!q)return state.albums;return state.albums.filter(a=>(a.albumartist||'').toLowerCase().includes(q)||(a.album||'').toLowerCase().includes(q))}
+function render(){const rows=filtered();$('matchCount').textContent=`${rows.length.toLocaleString()} albums matched`;$('results').innerHTML=rows.length?rows.map(a=>{const key=selectedKey(a);const checked=state.selected.has(key)?'checked':'';const disabled=a.selectable?'':'disabled';const badges=[...(a.releasetypes||'').split(',').filter(Boolean).map(x=>`<span class="badge">${esc(x)}</span>`),...a.warnings.map(x=>`<span class="badge warn">${esc(x)}</span>`),...a.blockers.map(x=>`<span class="badge bad">${esc(x)}</span>`)].join('');return `<div class="row" data-key="${encodeURIComponent(key)}"><div><input class="check albumCheck" type="checkbox" ${checked} ${disabled} aria-label="Select ${esc(a.album)}"></div><div><div class="album-artist">${esc(a.albumartist||'Missing Album Artist')}</div><div class="album-title">${esc(a.album||'Missing Album')}</div><div class="badges">${badges}</div></div><div>${a.source_rates.map(r=>(r/1000)+' kHz').join(', ')}</div><div>${a.matching_tracks}/${a.total_tracks}</div><div>${a.bit_depths.map(b=>b+'-bit').join(', ')}</div><div>${fmtBytes(a.matching_bytes)}</div></div>`}).join(''):'<div class="row"><div></div><div class="muted">No matching albums.</div></div>';
+ document.querySelectorAll('.albumCheck').forEach(c=>c.addEventListener('change',e=>{const key=decodeURIComponent(e.target.closest('.row').dataset.key);if(e.target.checked)state.selected.add(key);else state.selected.delete(key);updateTray()}));updateTray()}
+function updateTray(){let albums=state.albums.filter(a=>state.selected.has(selectedKey(a)));$('tray').classList.toggle('hidden',albums.length===0);$('selectedCount').textContent=`${albums.length} album${albums.length===1?'':'s'} selected`;$('selectedTracks').textContent=`${albums.reduce((n,a)=>n+a.matching_tracks,0)} matching tracks`;$('selectedSize').textContent=`${fmtBytes(albums.reduce((n,a)=>n+a.matching_bytes,0))} source`}
+let debounce; $('textSearch').addEventListener('input',()=>{clearTimeout(debounce);debounce=setTimeout(render,250)});['r96','r192','above48'].forEach(id=>$(id).addEventListener('change',loadCandidates));$('refreshBtn').onclick=loadCandidates;$('checkAll').onclick=()=>{for(const a of filtered())if(a.selectable)state.selected.add(selectedKey(a));render()};$('uncheckAll').onclick=()=>{for(const a of filtered())state.selected.delete(selectedKey(a));render()};$('clearSelected').onclick=()=>{state.selected.clear();render()};
+$('scanBtn').onclick=async()=>{const b=$('scanBtn');b.disabled=true;showScan('Incremental library scan queued…');try{await fetch('/api/scan/incremental',{method:'POST'});const poll=setInterval(async()=>{const s=await fetch('/api/scan/status').then(r=>r.json());if(s.active.running){showScan(`Scanning: ${s.active.files_seen.toLocaleString()} FLACs seen, ${s.active.files_read.toLocaleString()} updated`)}else{clearInterval(poll);showScan(`Scan complete: ${s.latest?.files_seen??0} FLACs seen, ${s.latest?.files_read??0} updated, ${s.latest?.errors??0} errors`,(s.latest?.errors??0)>0);b.disabled=false;await loadStatus();await loadCandidates()}},1200)}catch(e){showScan('Unable to start scan.',true);b.disabled=false}};
+loadStatus();loadCandidates();setInterval(loadStatus,5000);
 </script>
 </body>
 </html>
