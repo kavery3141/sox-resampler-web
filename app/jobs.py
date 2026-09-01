@@ -15,6 +15,7 @@ from . import db
 from .busy_guard import SourceBusyError, source_read_guard
 from .converter import convert_file
 from .index_update import refresh_track
+from .job_events import load_job_events, record_job_event
 from .profiles import ResampleProfile, get_profile, profile_from_dict
 from .storage_health import zfs_pool_health
 
@@ -81,7 +82,14 @@ def ensure_tables(db_path: Path) -> None:
 def recover_interrupted(db_path: Path, timezone: str) -> None:
     ensure_tables(db_path)
     now = datetime.now(ZoneInfo(timezone)).isoformat(timespec="seconds")
+    interrupted: list[tuple[int, str]] = []
     with db.session(db_path) as conn:
+        interrupted = [
+            (int(row["id"]), str(row["status"]))
+            for row in conn.execute(
+                "SELECT id,status FROM conversion_jobs WHERE status IN ('running','pausing','stopping','cancelling')"
+            ).fetchall()
+        ]
         # If the container died while doing the one allowed end-of-batch busy retry, restore the
         # file to deferred rather than pending so restart cannot accidentally grant extra retries.
         conn.execute(
@@ -97,6 +105,14 @@ def recover_interrupted(db_path: Path, timezone: str) -> None:
             "error_text=COALESCE(error_text,'Container or NAS restart interrupted this job') "
             "WHERE status IN ('running','pausing','stopping','cancelling')",
             (now,),
+        )
+    for job_id, previous_status in interrupted:
+        record_job_event(
+            db_path,
+            job_id,
+            now,
+            "restart_interrupted",
+            {"previous_status": previous_status, "reason": "Container or NAS restart"},
         )
 
 
@@ -114,6 +130,9 @@ class ConversionJobManager:
 
     def _now(self) -> str:
         return datetime.now(self.tz).isoformat(timespec="seconds")
+
+    def _event(self, job_id: int, event_type: str, detail: dict[str, Any] | None = None) -> None:
+        record_job_event(self.db_path, job_id, self._now(), event_type, detail)
 
     def is_running(self) -> bool:
         with self._lock:
@@ -168,6 +187,7 @@ class ConversionJobManager:
             {"albumartist": a["albumartist"], "album": a["album"], "folder": a["folder"]}
             for a in review["albums"]
         ]
+        created_at = self._now()
         with db.session(self.db_path) as conn:
             cur = conn.execute(
                 """
@@ -176,7 +196,7 @@ class ConversionJobManager:
                 ) VALUES(?,?,?,?,?,?,?)
                 """,
                 (
-                    self._now(),
+                    created_at,
                     "queued",
                     profile_id,
                     json.dumps(resolved_profile.to_dict(), separators=(",", ":"), sort_keys=True),
@@ -202,6 +222,13 @@ class ConversionJobManager:
                             str(path), int(track["source_bytes"]), "pending",
                         ),
                     )
+        record_job_event(
+            self.db_path,
+            job_id,
+            created_at,
+            "job_created",
+            {"workers": workers, "profile_id": profile_id, "albums": len(album_order)},
+        )
         return job_id
 
     def start(self, job_id: int) -> None:
@@ -211,17 +238,29 @@ class ConversionJobManager:
             gate = self._runtime_gate(0)
             if gate:
                 raise JobError(gate)
+            started_at = self._now()
+            previous_status = ""
+            workers = 1
             with db.session(self.db_path) as conn:
                 job = conn.execute("SELECT * FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
                 if not job:
                     raise JobError("Job not found")
                 if job["status"] not in ("queued", "paused", "interrupted"):
                     raise JobError(f"Job cannot start from status {job['status']}")
+                previous_status = str(job["status"])
+                workers = int(job["workers"])
                 conn.execute(
                     "UPDATE conversion_jobs SET status='running',started_at=COALESCE(started_at,?),"
                     "finished_at=NULL,pause_requested=0,stop_after_album=0,cancel_requested=0,error_text=NULL WHERE id=?",
-                    (self._now(), job_id),
+                    (started_at, job_id),
                 )
+            record_job_event(
+                self.db_path,
+                job_id,
+                started_at,
+                "job_started" if previous_status == "queued" else "job_resumed",
+                {"previous_status": previous_status, "workers": workers},
+            )
             self._active_job_id = job_id
             self._thread = threading.Thread(
                 target=self._run_job,
@@ -259,7 +298,7 @@ class ConversionJobManager:
             )
         return payload
 
-    def _record_file_deferred(self, file_id: int, error: str) -> dict[str, Any]:
+    def _record_file_deferred(self, job_id: int, file_id: int, path: str, error: str) -> dict[str, Any]:
         finished = self._now()
         payload = {"status": "deferred", "error": error, "retry": "end-of-batch-once"}
         with db.session(self.db_path) as conn:
@@ -272,6 +311,13 @@ class ConversionJobManager:
                 """,
                 (finished, error, json.dumps(payload, separators=(",", ":")), file_id),
             )
+        record_job_event(
+            self.db_path,
+            job_id,
+            finished,
+            "file_deferred_busy",
+            {"file_id": file_id, "path": path, "retry": "end-of-batch-once"},
+        )
         return payload
 
     def _run_file(
@@ -353,7 +399,9 @@ class ConversionJobManager:
                     f"Source remained busy after the one deferred end-of-batch retry; original left untouched: {source}",
                 )
             return self._record_file_deferred(
+                job_id,
                 file_id,
+                str(source),
                 f"Source is busy under advisory-lock detection; deferred until the end of the batch: {source}",
             )
         except Exception as exc:
@@ -386,6 +434,11 @@ class ConversionJobManager:
                 return "stopped", terminal_error
             gate = self._runtime_gate(int(row["source_bytes"]))
             if gate:
+                self._event(
+                    job_id,
+                    "runtime_pause",
+                    {"reason": gate, "stage": "deferred-retry", "required_temp_bytes": int(row["source_bytes"])},
+                )
                 return "paused", gate
             payload = self._run_file(
                 job_id,
@@ -466,6 +519,11 @@ class ConversionJobManager:
                     if gate:
                         terminal_status = "paused"
                         terminal_error = gate
+                        self._event(
+                            job_id,
+                            "runtime_pause",
+                            {"reason": gate, "stage": "main-batch", "required_temp_bytes": required_temp},
+                        )
                         break
                     cursor += len(wave)
                     with ThreadPoolExecutor(
@@ -502,43 +560,73 @@ class ConversionJobManager:
             terminal_status = "interrupted"
             terminal_error = str(exc)
         finally:
+            finished_at = self._now()
             with db.session(self.db_path) as conn:
                 conn.execute(
                     "UPDATE conversion_jobs SET status=?,finished_at=?,error_text=? WHERE id=?",
-                    (terminal_status, self._now(), terminal_error, job_id),
+                    (terminal_status, finished_at, terminal_error, job_id),
                 )
+            record_job_event(
+                self.db_path,
+                job_id,
+                finished_at,
+                "job_finished",
+                {"status": terminal_status, "message": terminal_error},
+            )
             with self._lock:
                 self._active_job_id = None
 
     def request_pause(self, job_id: int) -> None:
-        self._set_flag(job_id, "pause_requested", 1, "pausing")
+        self._set_flag(job_id, "pause_requested", 1, "pausing", "pause_requested")
 
     def request_stop_after_album(self, job_id: int) -> None:
-        self._set_flag(job_id, "stop_after_album", 1, "stopping")
+        self._set_flag(job_id, "stop_after_album", 1, "stopping", "stop_after_album_requested")
 
     def request_cancel(self, job_id: int) -> None:
-        self._set_flag(job_id, "cancel_requested", 1, "cancelling")
+        self._set_flag(job_id, "cancel_requested", 1, "cancelling", "cancel_requested")
 
     def set_workers(self, job_id: int, workers: int) -> None:
         if workers not in (1, 2):
             raise JobError("Workers must be 1 or 2")
+        previous_workers = 0
         with db.session(self.db_path) as conn:
-            exists = conn.execute("SELECT id FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
-            if not exists:
+            row = conn.execute("SELECT id,workers FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
                 raise JobError("Job not found")
+            previous_workers = int(row["workers"])
             conn.execute("UPDATE conversion_jobs SET workers=? WHERE id=?", (workers, job_id))
+        if previous_workers != workers:
+            self._event(
+                job_id,
+                "workers_changed",
+                {"from": previous_workers, "to": workers, "takes_effect": "between-files"},
+            )
 
-    def _set_flag(self, job_id: int, column: str, value: int, status: str) -> None:
+    def _set_flag(
+        self,
+        job_id: int,
+        column: str,
+        value: int,
+        status: str,
+        event_type: str,
+    ) -> None:
         if column not in {"pause_requested", "stop_after_album", "cancel_requested"}:
             raise JobError("Invalid control flag")
+        previous_status = ""
         with db.session(self.db_path) as conn:
-            exists = conn.execute("SELECT id FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
-            if not exists:
+            row = conn.execute("SELECT id,status FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
                 raise JobError("Job not found")
+            previous_status = str(row["status"])
             conn.execute(
                 f"UPDATE conversion_jobs SET {column}=?,status=? WHERE id=?",
                 (value, status, job_id),
             )
+        self._event(
+            job_id,
+            event_type,
+            {"previous_status": previous_status, "requested_status": status},
+        )
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         with db.session(self.db_path) as conn:
@@ -597,6 +685,7 @@ class ConversionJobManager:
         result["current_files"] = [dict(r) for r in current]
         result["deferred_files"] = [dict(r) for r in deferred]
         result["recent_failures"] = [dict(r) for r in recent_failures]
+        result["recent_events"] = load_job_events(self.db_path, job_id, limit=30)
         return result
 
     def recent_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
