@@ -17,7 +17,13 @@ from . import db
 from .admin import build_admin_router
 from .converter import recover_pending_transactions
 from .issues import build_metadata_issues, filter_issues, render_issues_csv, render_issues_txt
-from .job_maintenance import RetrySpecError, failed_retry_spec, prune_job_history
+from .job_maintenance import (
+    RetrySpecError,
+    clipping_retry_spec,
+    failed_retry_spec,
+    prune_job_history,
+    retry_options,
+)
 from .jobs import ConversionJobManager, JobError
 from .operations_log import configure_file_logging, record_event
 from .profile_store import get_profile as get_stored_profile, list_all_profiles
@@ -73,6 +79,10 @@ class BatchStartRequest(BatchReviewRequest):
 class RetryStartRequest(BaseModel):
     workers: int = 1
     acknowledged_replace_in_place: bool = False
+
+
+class HeadroomRetryStartRequest(RetryStartRequest):
+    headroom_db: float | None = Field(default=None, ge=-30.0, lt=0.0)
 
 
 class WorkersRequest(BaseModel):
@@ -201,15 +211,18 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
     )
 
 
+def _retry_error(exc: RetrySpecError) -> HTTPException:
+    detail = str(exc)
+    return HTTPException(status_code=404 if detail == "Job not found" else 409, detail=detail)
+
+
 def _retry_review(job_id: int, workers: int) -> tuple[dict[str, Any], dict[str, Any]]:
     if workers not in (1, 2):
         raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
     try:
         spec = failed_retry_spec(DB_PATH, job_id)
     except RetrySpecError as exc:
-        detail = str(exc)
-        status_code = 404 if detail == "Job not found" else 409
-        raise HTTPException(status_code=status_code, detail=detail) from exc
+        raise _retry_error(exc) from exc
     review = _review_resolved(
         albums=spec["albums"],
         rates=spec["rates"],
@@ -224,6 +237,39 @@ def _retry_review(job_id: int, workers: int) -> tuple[dict[str, Any], dict[str, 
         "exact_paths": list(spec["paths"]),
         "original_workers": spec["original_workers"],
         "original_failures": spec["failures"],
+    }
+    return review, spec
+
+
+def _headroom_retry_review(
+    job_id: int,
+    workers: int,
+    headroom_db: float | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if workers not in (1, 2):
+        raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
+    try:
+        spec = clipping_retry_spec(DB_PATH, job_id, headroom_db=headroom_db)
+    except RetrySpecError as exc:
+        raise _retry_error(exc) from exc
+    review = _review_resolved(
+        albums=spec["albums"],
+        rates=spec["rates"],
+        above=spec["above"],
+        profile=spec["profile"],
+        workers=workers,
+        include_paths=set(spec["paths"]),
+    )
+    review["retry"] = {
+        "source_job_id": job_id,
+        "failed_files": len(spec["paths"]),
+        "clipping_failures": len(spec["paths"]),
+        "exact_paths": list(spec["paths"]),
+        "original_workers": spec["original_workers"],
+        "original_failures": spec["failures"],
+        "original_headroom_db": spec["original_headroom_db"],
+        "headroom_db": spec["headroom_db"],
+        "mode": "clipping-headroom",
     }
     return review, spec
 
@@ -454,6 +500,14 @@ def conversion_job(job_id: int) -> dict[str, Any]:
     return job
 
 
+@app.get("/api/convert/jobs/{job_id}/retry-options")
+def conversion_retry_options(job_id: int) -> dict[str, Any]:
+    try:
+        return retry_options(DB_PATH, job_id)
+    except RetrySpecError as exc:
+        raise _retry_error(exc) from exc
+
+
 @app.get("/api/convert/jobs/{job_id}/retry-review")
 def retry_failed_review(job_id: int, workers: int = Query(default=1, ge=1, le=2)) -> dict[str, Any]:
     review, _ = _retry_review(job_id, workers)
@@ -491,6 +545,53 @@ def retry_failed_start(job_id: int, request: RetryStartRequest) -> dict[str, Any
         "status": "running",
         "retry_of_job_id": job_id,
         "failed_files": len(spec["paths"]),
+    }
+
+
+@app.get("/api/convert/jobs/{job_id}/retry-headroom-review")
+def retry_headroom_review(
+    job_id: int,
+    workers: int = Query(default=1, ge=1, le=2),
+    headroom_db: float | None = Query(default=None, ge=-30.0, lt=0.0),
+) -> dict[str, Any]:
+    review, _ = _headroom_retry_review(job_id, workers, headroom_db)
+    return review
+
+
+@app.post("/api/convert/jobs/{job_id}/retry-headroom-start")
+def retry_headroom_start(job_id: int, request: HeadroomRetryStartRequest) -> dict[str, Any]:
+    if not request.acknowledged_replace_in_place:
+        raise HTTPException(status_code=400, detail="In-place replacement acknowledgment is required")
+    review, spec = _headroom_retry_review(job_id, request.workers, request.headroom_db)
+    if not review["can_start"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Headroom retry preflight failed", "blockers": review["blockers"]},
+        )
+    source_filter = {
+        "rates": spec["rates"],
+        "above": spec["above"],
+        "retry_with_headroom_of_job_id": job_id,
+        "exact_clipping_failures": len(spec["paths"]),
+        "original_headroom_db": spec["original_headroom_db"],
+        "headroom_db": spec["headroom_db"],
+    }
+    try:
+        new_job_id = job_manager.create_job(
+            review,
+            spec["profile_id"],
+            request.workers,
+            source_filter,
+        )
+        job_manager.start(new_job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "job_id": new_job_id,
+        "status": "running",
+        "retry_with_headroom_of_job_id": job_id,
+        "clipping_failures": len(spec["paths"]),
+        "headroom_db": spec["headroom_db"],
     }
 
 
