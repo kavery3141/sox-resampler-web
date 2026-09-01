@@ -106,11 +106,10 @@ def build_batch_review(
 ) -> dict[str, Any]:
     """Build and revalidate a destructive batch review.
 
-    Normal library batches select tracks by the active source-rate filter. Retry batches pass
-    ``include_paths`` so only the exact failed source files are reviewed. Exact-path selection is
-    intentionally independent of the old rate filter: a file that changed after its failure is
-    still surfaced and then blocked by the normal live revalidation checks rather than silently
-    disappearing from the retry batch.
+    Album identity is ALBUMARTIST + ALBUM. All indexed physical folders carrying that identity are
+    reviewed together so multi-disc releases remain one batch album even when discs are stored in
+    separate subfolders. Retry batches pass ``include_paths`` so only exact failed source files are
+    selected while the complete album identity is still revalidated.
     """
     if workers not in (1, 2):
         raise ValueError("Workers must be 1 or 2")
@@ -129,16 +128,16 @@ def build_batch_review(
         for key in album_keys:
             albumartist = key.get("albumartist", "")
             album = key.get("album", "")
-            folder = key.get("folder", "")
-            folder_path = Path(folder)
+            requested_folder = key.get("folder", "")
             rows = conn.execute(
                 """
                 SELECT * FROM tracks
-                WHERE COALESCE(albumartist,'')=? AND COALESCE(album,'')=? AND folder=?
+                WHERE COALESCE(albumartist,'')=? AND COALESCE(album,'')=?
                 ORDER BY CAST(COALESCE(discnumber,'1') AS INTEGER),
-                         CAST(COALESCE(tracknumber,'0') AS INTEGER), filename COLLATE NOCASE
+                         CAST(COALESCE(tracknumber,'0') AS INTEGER),
+                         folder COLLATE NOCASE,filename COLLATE NOCASE
                 """,
-                (albumartist, album, folder),
+                (albumartist, album),
             ).fetchall()
             tracks: list[dict[str, Any]] = []
             album_source = 0
@@ -147,19 +146,31 @@ def build_batch_review(
             album_blockers: list[str] = []
             matching = 0
 
-            if rows:
+            folder_counts: dict[str, int] = {}
+            for row in rows:
+                folder_text = str(row["folder"])
+                folder_counts[folder_text] = folder_counts.get(folder_text, 0) + 1
+            folders = sorted(folder_counts, key=str.casefold)
+            display_folder = requested_folder if requested_folder in folder_counts else (folders[0] if folders else requested_folder)
+
+            # Revalidate every physical directory participating in this logical album. This catches
+            # added/removed tracks without splitting Disc 1 / Disc 2 into separate conversion rows.
+            for folder_text in folders:
+                folder_path = Path(folder_text)
                 try:
                     resolved_folder = folder_path.resolve(strict=True)
                     if music_root != resolved_folder and music_root not in resolved_folder.parents:
-                        album_blockers.append("Album folder is outside the configured music root")
-                    else:
-                        current_album_count = _physical_album_track_count(resolved_folder, albumartist, album)
-                        if current_album_count != len(rows):
-                            album_blockers.append(
-                                f"Album track count changed since scan (indexed {len(rows)}, current {current_album_count}); rescan required"
-                            )
+                        album_blockers.append(f"Album folder is outside the configured music root: {folder_text}")
+                        continue
+                    current_album_count = _physical_album_track_count(resolved_folder, albumartist, album)
+                    indexed_count = folder_counts[folder_text]
+                    if current_album_count != indexed_count:
+                        album_blockers.append(
+                            f"Album track count changed since scan in {folder_text} "
+                            f"(indexed {indexed_count}, current {current_album_count}); rescan required"
+                        )
                 except OSError:
-                    album_blockers.append("Album folder no longer exists; rescan required")
+                    album_blockers.append(f"Album folder no longer exists; rescan required: {folder_text}")
 
             for row in rows:
                 item = dict(row)
@@ -250,7 +261,10 @@ def build_batch_review(
                 tracks.append(
                     {
                         "path": indexed_path,
+                        "folder": item["folder"],
                         "filename": item["filename"],
+                        "discnumber": item.get("discnumber"),
+                        "tracknumber": item.get("tracknumber"),
                         "sample_rate": source_rate,
                         "target_rate": profile.target_rate,
                         "resample_ratio": _ratio_label(source_rate, profile.target_rate),
@@ -278,7 +292,9 @@ def build_batch_review(
             album_entry = {
                 "albumartist": albumartist,
                 "album": album,
-                "folder": folder,
+                "folder": display_folder,
+                "folders": folders,
+                "folder_count": len(folders),
                 "indexed_tracks": len(rows),
                 "matching_tracks": matching,
                 "source_bytes": album_source,
