@@ -194,3 +194,6 @@ document.body.appendChild(issuesUiScript);
 const liveStatsScript=document.createElement('script');
 liveStatsScript.src='/static/live-stats.js';
 document.body.appendChild(liveStatsScript);
+const advancedPresetsScript=document.createElement('script');
+advancedPresetsScript.src='/static/advanced-presets.js';
+document.body.appendChild(advancedPresetsScript);
