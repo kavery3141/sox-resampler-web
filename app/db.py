@@ -175,7 +175,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
     SELECT
       COALESCE(tracks.albumartist,'') albumartist,
       COALESCE(tracks.album,'') album,
-      tracks.folder folder,
+      MIN(tracks.folder) folder,
       COUNT(*) total_tracks,
       SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END) matching_tracks,
       SUM(CASE WHEN NOT ({where}) THEN 1 ELSE 0 END) untouched_tracks,
@@ -195,12 +195,12 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
       SUM(CASE WHEN replaygain_track_gain IS NULL OR replaygain_track_peak IS NULL
                 OR replaygain_album_gain IS NULL OR replaygain_album_peak IS NULL THEN 1 ELSE 0 END) replaygain_incomplete,
       SUM(CASE WHEN channels > 2 THEN 1 ELSE 0 END) multichannel_tracks,
-      MAX(CASE WHEN album_art.status='ready' THEN album_art.id END) artwork_id
+      MIN(CASE WHEN album_art.status='ready' THEN album_art.id END) artwork_id
     FROM tracks
     LEFT JOIN album_art ON album_art.folder=tracks.folder
-    GROUP BY tracks.albumartist, tracks.album, tracks.folder
+    GROUP BY tracks.albumartist, tracks.album
     HAVING matching_tracks > 0
-    ORDER BY tracks.albumartist COLLATE NOCASE, tracks.album COLLATE NOCASE, tracks.folder COLLATE NOCASE
+    ORDER BY tracks.albumartist COLLATE NOCASE, tracks.album COLLATE NOCASE
     """
 
     # The rate predicate is expanded independently in seven SELECT expressions above. Each
@@ -209,6 +209,14 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
     qargs = args * 7
     with session(path) as db:
         rows = [dict(r) for r in db.execute(sql, qargs).fetchall()]
+        album_folder_rows = db.execute(
+            """
+            SELECT COALESCE(albumartist,'') albumartist,COALESCE(album,'') album,folder
+            FROM tracks
+            GROUP BY albumartist,album,folder
+            ORDER BY folder COLLATE NOCASE
+            """
+        ).fetchall()
         folder_health_rows = db.execute(
             """
             SELECT
@@ -226,18 +234,34 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
             """
         ).fetchall()
 
+    album_folders: dict[tuple[str, str], list[str]] = {}
+    for item in album_folder_rows:
+        key = (str(item["albumartist"]), str(item["album"]))
+        album_folders.setdefault(key, []).append(str(item["folder"]))
     folder_health = {str(row["folder"]): dict(row) for row in folder_health_rows}
+
+    def any_folder_problem(folders: list[str], missing_field: str, values_field: str) -> bool:
+        for folder in folders:
+            health = folder_health.get(folder, {})
+            if health.get(missing_field) or health.get(values_field) != 1:
+                return True
+        return False
+
     for row in rows:
         blockers: list[str] = []
         warnings: list[str] = []
-        health = folder_health.get(str(row["folder"]), {})
-        if health.get("missing_albumartist") or health.get("albumartist_values") != 1:
+        folders = album_folders.get((str(row["albumartist"]), str(row["album"])), [])
+        row["folders"] = folders
+        row["folder_count"] = len(folders)
+        if folders:
+            row["folder"] = folders[0]
+        if any_folder_problem(folders, "missing_albumartist", "albumartist_values"):
             blockers.append("ALBUMARTIST missing or inconsistent")
-        if health.get("missing_album") or health.get("album_values") != 1:
+        if any_folder_problem(folders, "missing_album", "album_values"):
             blockers.append("ALBUM missing or inconsistent")
-        if health.get("missing_releasetype") or health.get("releasetype_values") != 1:
+        if any_folder_problem(folders, "missing_releasetype", "releasetype_values"):
             blockers.append("RELEASETYPE missing or inconsistent")
-        if health.get("missing_mbid") or health.get("mbid_values") != 1:
+        if any_folder_problem(folders, "missing_mbid", "mbid_values"):
             blockers.append("MUSICBRAINZ_ALBUMID missing or inconsistent")
         if row["multichannel_tracks"]:
             blockers.append("Multichannel FLAC requires review")
