@@ -3,7 +3,31 @@ const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtBytes=n=>{if(!n)return '0 B';const u=['B','KB','MB','GB','TB'];let i=0,x=Number(n);while(x>=1024&&i<u.length-1){x/=1024;i++}return `${x.toFixed(i>1?1:0)} ${u[i]}`};
 const basename=p=>String(p||'').split('/').pop()||String(p||'');
-const fmtTime=value=>value?String(value).replace('T',' '):'';
+const NAS_TIME_ZONE='America/Indiana/Indianapolis';
+const fmtExactTime=value=>{
+  if(!value)return '';
+  const date=new Date(value);
+  if(!Number.isFinite(date.getTime()))return String(value).replace('T',' ');
+  try{return new Intl.DateTimeFormat('en-US',{timeZone:NAS_TIME_ZONE,year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',timeZoneName:'short'}).format(date)}
+  catch(e){return String(value).replace('T',' ')}
+};
+const fmtRelativeTime=value=>{
+  if(!value)return '';
+  const date=new Date(value);
+  if(!Number.isFinite(date.getTime()))return '';
+  const delta=date.getTime()-Date.now(),abs=Math.abs(delta);
+  if(abs<45000)return 'just now';
+  let unit='minute',divisor=60000;
+  if(abs<90*60000){unit='minute';divisor=60000}
+  else if(abs<36*3600000){unit='hour';divisor=3600000}
+  else if(abs<45*86400000){unit='day';divisor=86400000}
+  else if(abs<345*86400000){unit='month';divisor=30*86400000}
+  else{unit='year';divisor=365*86400000}
+  const amount=Math.round(delta/divisor)||Math.sign(delta)||0;
+  try{return new Intl.RelativeTimeFormat('en-US',{numeric:'auto'}).format(amount,unit)}
+  catch(e){return delta<0?`${Math.abs(amount)} ${unit}${Math.abs(amount)===1?'':'s'} ago`:`in ${Math.abs(amount)} ${unit}${Math.abs(amount)===1?'':'s'}`}
+};
+const fmtTime=value=>value?`${fmtRelativeTime(value)} · ${fmtExactTime(value)}`:'';
 function selectedKey(a){return `${a.albumartist}\u0000${a.album}\u0000${a.folder}`}
 function activeRates(){const r=[];if($('r96').checked)r.push(96000);if($('r192').checked)r.push(192000);return r}
 function lines(id){return $(id).value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean)}
@@ -98,7 +122,7 @@ async function loadMaintenance(){
   try{
     const d=await fetch('/api/maintenance/status').then(r=>r.json());
     $('maintenanceSummary').innerHTML=`<div class="card metric"><span>Indexed FLACs</span><strong>${d.library.tracks.toLocaleString()}</strong></div><div class="card metric"><span>Indexed Albums</span><strong>${d.library.albums.toLocaleString()}</strong></div><div class="card metric"><span>Database</span><strong>${fmtBytes(d.database.size_bytes+d.database.wal_bytes)}</strong></div><div class="card metric"><span>Free space</span><strong>${fmtBytes(d.free_bytes)}</strong></div><div class="card metric"><span>ZFS</span><strong>${d.zfs?.ok?'Healthy':'Blocked'}</strong></div>`;
-    const scan=d.latest_scan||{};$('maintenanceDetails').innerHTML=`<span class="maintenanceKey">App version</span><span>${esc(d.app_version)}</span><span class="maintenanceKey">Database schema</span><span>${esc(d.db_schema)}</span><span class="maintenanceKey">SoX</span><span>${esc(d.tools.sox||'Unavailable')}</span><span class="maintenanceKey">FLAC</span><span>${esc(d.tools.flac||'Unavailable')}</span><span class="maintenanceKey">Python</span><span>${esc(d.tools.python||'Unavailable')}</span><span class="maintenanceKey">Last scan</span><span>${esc(scan.finished_at||scan.started_at||'Never')}</span><span class="maintenanceKey">Last scan status</span><span>${esc(scan.status||'—')}</span><span class="maintenanceKey">Timezone</span><span>${esc(d.timezone)}</span><span class="maintenanceKey">Music root</span><span>${esc(d.music_root)}</span><span class="maintenanceKey">Data root</span><span>${esc(d.data_root)}</span>`;
+    const scan=d.latest_scan||{};$('maintenanceDetails').innerHTML=`<span class="maintenanceKey">App version</span><span>${esc(d.app_version)}</span><span class="maintenanceKey">Database schema</span><span>${esc(d.db_schema)}</span><span class="maintenanceKey">SoX</span><span>${esc(d.tools.sox||'Unavailable')}</span><span class="maintenanceKey">FLAC</span><span>${esc(d.tools.flac||'Unavailable')}</span><span class="maintenanceKey">Python</span><span>${esc(d.tools.python||'Unavailable')}</span><span class="maintenanceKey">Last scan</span><span>${esc(fmtTime(scan.finished_at||scan.started_at)||'Never')}</span><span class="maintenanceKey">Last scan status</span><span>${esc(scan.status||'—')}</span><span class="maintenanceKey">Timezone</span><span>${esc(d.timezone)}</span><span class="maintenanceKey">Music root</span><span>${esc(d.music_root)}</span><span class="maintenanceKey">Data root</span><span>${esc(d.data_root)}</span>`;
   }catch(e){notice('maintenanceNotice',e.message,'bad')}
 }
 async function maintenanceAction(path,label,confirmText=null){if(confirmText&&!confirm(confirmText))return;notice('maintenanceNotice',`${label} requested…`,'info');try{const r=await fetch(path,{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.detail||`${label} failed`);notice('maintenanceNotice',`${label} accepted.`, 'good');await loadMaintenance();await loadStatus()}catch(e){notice('maintenanceNotice',e.message,'bad')}}

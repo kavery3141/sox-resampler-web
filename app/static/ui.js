@@ -58,7 +58,7 @@ async function loadHome(){
     $('homeWarningCount').textContent=warnings.toLocaleString();
     $('homeInterruptedCount').textContent=interrupted.toLocaleString();
     const scan=status.latest_scan||{};
-    $('homeLastScan').textContent=scan.finished_at||scan.started_at||'Never';
+    $('homeLastScan').textContent=fmtTime(scan.finished_at||scan.started_at)||'Never';
     $('homeNasState').textContent=status.zfs?.ok?'Ready':'Blocked';
     $('homeNasState').className=`statusPill ${status.zfs?.ok?'completed':'interrupted'}`;
     $('homeFreeSpace').textContent=fmtBytes(status.free_bytes);
