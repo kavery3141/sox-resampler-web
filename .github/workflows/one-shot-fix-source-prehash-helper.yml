@@ -1,0 +1,30 @@
+name: One-shot source pre-hash helper correction
+
+on:
+  push:
+    paths:
+      - tools/fix_source_prehash_helper.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Correct helper guard
+        run: python tools/fix_source_prehash_helper.py
+      - name: Commit corrected helper
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/one_shot_source_prehash.py
+          git commit -m "Fix source pre-hash helper guard"
+          git push
