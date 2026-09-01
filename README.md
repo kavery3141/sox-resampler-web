@@ -45,14 +45,19 @@ The supplied `compose.truenas.yaml` currently follows the development image whil
 - timezone: `America/Indiana/Indianapolis`
 - runtime UID/GID: `568:568`
 - restart policy: `unless-stopped`
+- read-only container root filesystem with an ephemeral `/tmp`
+- all Linux capabilities dropped and `no-new-privileges` enabled
+- no `/dev/zfs` device exposure; pool health uses the read-only OpenZFS kernel status interface when available
+
+The two intended writable locations are the explicit `/music` and `/data` dataset mounts. CI validates the supplied Compose definition before building the container.
 
 Stable deployments will use pinned release tags rather than automatic updates. The Maintenance page can check published GitHub releases and report update availability, but the application never installs an update itself.
 
 ## Storage health
 
-New destructive conversion work fails closed if the configured ZFS pool is not confirmed healthy, the music dataset is not writable, free space drops below the configured reserve, Read-only Scan Mode is enabled, or recovery state requires manual attention. On Linux/OpenZFS the app prefers the read-only `/proc/spl/kstat/zfs/<pool>/state` pool heartbeat and retains `zpool status -x` as a fallback.
+New destructive conversion work fails closed if the configured ZFS pool is not confirmed healthy, the music dataset is not writable, free space drops below the configured reserve, Read-only Scan Mode is enabled, or recovery state requires manual attention. On Linux/OpenZFS the app prefers the read-only `/proc/spl/kstat/zfs/<pool>/state` pool heartbeat and retains `zpool status -x` as a fallback when the runtime permits it.
 
-Conversion CPU throttling is optional and disabled by default. When enabled in Settings, each SoX conversion worker is wrapped with `cpulimit` at the configured 10–100% per-worker ceiling; changes take effect when the next file starts and never initiate conversion.
+Conversion CPU throttling is optional and disabled by default. When enabled in Settings, each SoX worker receives an independent `cpulimit` controller targeting that worker's actual process ID at the configured 10–100% ceiling. Changes take effect when the next file starts, do not alter DSP settings, and never initiate conversion.
 
 ## Branding
 
