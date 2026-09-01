@@ -3,6 +3,7 @@ const APPEARANCE_DENSITY_KEY='sox-resampler-density';
 const LIBRARY_HEALTH_KEY='sox-resampler-library-health';
 const LIBRARY_RECENT_KEY='sox-resampler-library-recent';
 const LIBRARY_SORT_KEY='sox-resampler-library-sort';
+const openAlbumDetails=new Set();
 
 function effectiveTheme(){
   const pref=localStorage.getItem(APPEARANCE_THEME_KEY)||'system';
@@ -122,24 +123,45 @@ function saveLibraryFilters(){
 }
 function libraryFilterChanged(){saveLibraryFilters();render()}
 
-const baseRender=render;
-render=function(){baseRender();enableRowKeyboard()};
-function enableRowKeyboard(){
+function detailHtml(album){
+  const release=(album.releasetypes||'').split(',').filter(Boolean).join(', ')||'Missing';
+  const mbid=(album.mbids||'').split(',').filter(Boolean).join(', ')||'Missing';
+  const channels=(album.channels||'').split(',').filter(Boolean).map(x=>`${x} ch`).join(', ')||'Unknown';
+  const rg=(album.warnings||[]).includes('ReplayGain incomplete')?'Incomplete':'Complete';
+  const relative=String(album.folder||'').replace(/^\/music\/?/,'');
+  return `<div class="albumDetailGrid"><span class="muted">ALBUMARTIST</span><span>${esc(album.albumartist||'Missing')}</span><span class="muted">ALBUM</span><span>${esc(album.album||'Missing')}</span><span class="muted">RELEASETYPE</span><span>${esc(release)}</span><span class="muted">MUSICBRAINZ_ALBUMID</span><span class="copyLine"><code>${esc(mbid)}</code><button class="copyMbid">Copy</button></span><span class="muted">ReplayGain</span><span>${esc(rg)}</span><span class="muted">Channels</span><span>${esc(channels)}</span><span class="muted">First seen</span><span>${esc(fmtTime(album.first_seen)||'Unknown')}</span><span class="muted">Folder</span><span class="copyLine"><code>${esc(album.folder||'')}</code><button class="copyPath">Copy Path</button></span><span class="muted">Relative path</span><span><code>${esc(relative)}</code></span></div>`;
+}
+function toggleAlbumDetail(key,force=null){
+  const open=force===null?!openAlbumDetails.has(key):Boolean(force);
+  if(open)openAlbumDetails.add(key);else openAlbumDetails.delete(key);
+  const detail=document.querySelector(`.albumDetail[data-key="${CSS.escape(encodeURIComponent(key))}"]`);
+  const button=document.querySelector(`.detailsBtn[data-key="${CSS.escape(encodeURIComponent(key))}"]`);
+  if(detail)detail.classList.toggle('hidden',!open);
+  if(button)button.textContent=open?'Hide Details':'Details';
+}
+function decorateRows(){
   const rows=[...document.querySelectorAll('#results .row[data-key]')];
   rows.forEach((row,index)=>{
+    const key=decodeURIComponent(row.dataset.key);const album=state.albums.find(a=>selectedKey(a)===key);if(!album)return;
+    const albumCell=row.children[1];
+    const button=document.createElement('button');button.type='button';button.className='detailsBtn';button.dataset.key=encodeURIComponent(key);button.textContent=openAlbumDetails.has(key)?'Hide Details':'Details';button.onclick=event=>{event.stopPropagation();toggleAlbumDetail(key)};albumCell.appendChild(button);
+    const detail=document.createElement('div');detail.className='albumDetail'+(openAlbumDetails.has(key)?'':' hidden');detail.dataset.key=encodeURIComponent(key);detail.innerHTML=detailHtml(album);row.after(detail);
+    detail.querySelector('.copyPath').onclick=()=>navigator.clipboard?.writeText(album.folder||'');
+    detail.querySelector('.copyMbid').onclick=()=>navigator.clipboard?.writeText((album.mbids||'').split(',').filter(Boolean).join(', '));
     row.tabIndex=0;
     row.addEventListener('keydown',event=>{
       if(event.key==='ArrowDown'||event.key==='ArrowUp'){
-        event.preventDefault();
-        const next=index+(event.key==='ArrowDown'?1:-1);
-        if(rows[next])rows[next].focus();
+        event.preventDefault();const next=index+(event.key==='ArrowDown'?1:-1);if(rows[next])rows[next].focus();
       }else if(event.key===' '){
-        const check=row.querySelector('.albumCheck');
-        if(check&&!check.disabled){event.preventDefault();check.checked=!check.checked;check.dispatchEvent(new Event('change',{bubbles:true}))}
-      }
+        const check=row.querySelector('.albumCheck');if(check&&!check.disabled){event.preventDefault();check.checked=!check.checked;check.dispatchEvent(new Event('change',{bubbles:true}))}
+      }else if(event.key==='Enter'){event.preventDefault();toggleAlbumDetail(key)}
     });
   });
 }
+const baseRender=render;
+render=function(){baseRender();decorateRows()};
+
+function setAllVisibleDetails(open){for(const album of filtered()){const key=selectedKey(album);if(open)openAlbumDetails.add(key);else openAlbumDetails.delete(key)}render()}
 function editableTarget(target){return target&&['INPUT','TEXTAREA','SELECT'].includes(target.tagName)}
 document.addEventListener('keydown',event=>{
   if((event.key==='/'||(event.ctrlKey&&event.key.toLowerCase()==='f'))&&!event.altKey&&!event.metaKey){
@@ -147,8 +169,8 @@ document.addEventListener('keydown',event=>{
     return;
   }
   if(editableTarget(event.target)||event.ctrlKey||event.metaKey||event.altKey)return;
-  if(event.key.toLowerCase()==='a'){$('checkAll').click()}
-  else if(event.key.toLowerCase()==='n'){$('uncheckAll').click()}
+  if(event.key.toLowerCase()==='a')$('checkAll').click();
+  else if(event.key.toLowerCase()==='n')$('uncheckAll').click();
 });
 
 $('navHome').onclick=()=>showView('home');
@@ -158,6 +180,8 @@ $('densitySelect').onchange=saveAppearance;
 $('healthFilter').onchange=libraryFilterChanged;
 $('recentFilter').onchange=libraryFilterChanged;
 $('sortFilter').onchange=libraryFilterChanged;
+$('expandAll').onclick=()=>setAllVisibleDetails(true);
+$('collapseAll').onclick=()=>setAllVisibleDetails(false);
 applyAppearance();
 loadLibraryFilters();
 if(window.matchMedia){window.matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>{if((localStorage.getItem(APPEARANCE_THEME_KEY)||'system')==='system')applyAppearance()})}
