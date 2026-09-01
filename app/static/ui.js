@@ -191,3 +191,6 @@ render();
 const issuesUiScript=document.createElement('script');
 issuesUiScript.src='/static/issues-ui.js';
 document.body.appendChild(issuesUiScript);
+const liveStatsScript=document.createElement('script');
+liveStatsScript.src='/static/live-stats.js';
+document.body.appendChild(liveStatsScript);
