@@ -39,6 +39,7 @@ from .reports import (
 from .review import build_batch_review
 from .scanner import LibraryScanner
 from .storage_health import zfs_pool_health
+from .temp_cleanup import cleanup_orphan_temps
 
 APP_VERSION = "0.7.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
@@ -54,7 +55,7 @@ scanner = LibraryScanner(MUSIC_ROOT, DB_PATH, TIMEZONE)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="library-scan")
 scheduler = BackgroundScheduler(timezone=TIMEZONE)
 job_manager = ConversionJobManager(DB_PATH, MUSIC_ROOT, TIMEZONE)
-recovery_status: list[dict[str, str]] = []
+recovery_status: list[dict[str, Any]] = []
 
 
 class AlbumKey(BaseModel):
@@ -124,10 +125,35 @@ app.include_router(
 app.include_router(build_profiles_router(DB_PATH))
 
 
+def _refresh_recovery_status(*, log_events: bool) -> list[dict[str, Any]]:
+    """Reconcile interrupted file transactions and conservatively clean orphan temps.
+
+    This maintenance path never initiates audio conversion and never promotes a temp file. Normal
+    source FLACs are read only for positive identity checks; only positively classified hidden app
+    temp files may be removed automatically.
+    """
+    global recovery_status
+    transaction_outcomes = recover_pending_transactions(DATA_ROOT)
+    temp_outcomes = cleanup_orphan_temps(
+        MUSIC_ROOT,
+        DB_PATH,
+        DATA_ROOT / "transactions",
+    )
+    recovery_status = [*transaction_outcomes, *temp_outcomes]
+    if log_events:
+        now = job_manager._now()
+        for item in transaction_outcomes:
+            record_event(DB_PATH, now, "transaction_recovery", item)
+        for item in temp_outcomes:
+            record_event(DB_PATH, now, "orphan_temp_cleanup", item)
+    return recovery_status
+
+
 def _daily_scan() -> None:
-    # Discovery only. Conversion is intentionally never launched by a schedule.
+    # Discovery/maintenance only. Conversion is intentionally never launched by a schedule.
     if scanner.snapshot()["running"] or job_manager.is_running():
         return
+    _refresh_recovery_status(log_events=True)
     retention = prune_job_history(DB_PATH, TIMEZONE)
     if retention["deleted_jobs"]:
         record_event(DB_PATH, job_manager._now(), "history_retention_prune", retention)
@@ -156,7 +182,7 @@ def _apply_operational_review_checks(review: dict[str, Any], reserve: int) -> di
         or str(item.get("action", "")).startswith("recovery_error")
         for item in recovery_status
     ):
-        review["blockers"].append("An interrupted file transaction needs manual attention before conversion")
+        review["blockers"].append("An interrupted file transaction or orphan temp needs manual attention before conversion")
     zfs = zfs_pool_health()
     review["zfs"] = zfs
     if not zfs["ok"]:
@@ -284,16 +310,13 @@ def _attachment(content: str, media_type: str, filename: str) -> Response:
 
 @app.on_event("startup")
 def startup() -> None:
-    global recovery_status
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     configure_file_logging(DATA_ROOT)
-    recovery_status = recover_pending_transactions(DATA_ROOT)
     db.init(DB_PATH)
+    _refresh_recovery_status(log_events=True)
     retention = prune_job_history(DB_PATH, TIMEZONE)
     if retention["deleted_jobs"]:
         record_event(DB_PATH, job_manager._now(), "history_retention_prune", retention)
-    for item in recovery_status:
-        record_event(DB_PATH, job_manager._now(), "transaction_recovery", item)
     if not scheduler.running:
         scheduler.add_job(
             _daily_scan,
@@ -630,7 +653,7 @@ def resume_job(job_id: int) -> dict[str, Any]:
         or str(item.get("action", "")).startswith("recovery_error")
         for item in recovery_status
     ):
-        raise HTTPException(status_code=409, detail="An interrupted file transaction needs manual attention")
+        raise HTTPException(status_code=409, detail="An interrupted file transaction or orphan temp needs manual attention")
     try:
         job_manager.start(job_id)
     except JobError as exc:
