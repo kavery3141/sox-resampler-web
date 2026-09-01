@@ -14,10 +14,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
+from .converter import recover_pending_transactions
 from .force_stop import request_abort
 from .job_maintenance import clear_terminal_history, history_summary
 from .operations_log import log_disk_usage, recent_events, record_event
 from .storage_health import zfs_pool_health
+from .temp_cleanup import cleanup_orphan_temps
 
 DEFAULT_RESERVE_BYTES = 10 * 1024**3
 
@@ -133,6 +135,22 @@ def _timestamp(value: str | None) -> float | None:
         return None
 
 
+def _recovery_summary(outcomes: list[dict[str, Any]]) -> dict[str, int | bool]:
+    manual_attention = sum(1 for item in outcomes if item.get("action") == "manual_attention")
+    errors = sum(
+        1
+        for item in outcomes
+        if str(item.get("action", "")).startswith("recovery_error")
+    )
+    return {
+        "items": len(outcomes),
+        "automatic_actions": max(0, len(outcomes) - manual_attention - errors),
+        "manual_attention": manual_attention,
+        "errors": errors,
+        "blocked": bool(manual_attention or errors),
+    }
+
+
 def _job_runtime_times(db_path: Path, job_id: int) -> dict[str, float | int | str | None]:
     now = datetime.now().astimezone().timestamp()
     terminal = {"completed", "cancelled", "stopped"}
@@ -212,7 +230,7 @@ def build_admin_router(
     scanner: Any,
     job_manager: Any,
     scan_async: Callable[[str], dict[str, Any]],
-    recovery_status: Callable[[], list[dict[str, str]]],
+    recovery_status: Callable[[], list[dict[str, Any]]],
 ) -> APIRouter:
     router = APIRouter()
     tz = ZoneInfo(timezone)
@@ -299,11 +317,7 @@ def build_admin_router(
             "active_files": 0,
         }
         recovery = recovery_status()
-        recovery_blocked = any(
-            item.get("action") == "manual_attention"
-            or str(item.get("action", "")).startswith("recovery_error")
-            for item in recovery
-        )
+        recovery_blocked = bool(_recovery_summary(recovery)["blocked"])
         active_files = int(job_times["active_files"] or 0)
         safe_to_restart = active_files == 0 and not recovery_blocked
         if recovery_blocked:
@@ -331,6 +345,7 @@ def build_admin_router(
         wal = db_path.with_name(db_path.name + "-wal")
         shm = db_path.with_name(db_path.name + "-shm")
         usage = psutil.disk_usage(str(music_root)) if music_root.exists() else None
+        recovery = recovery_status()
         return {
             "app_version": app_version,
             "db_schema": db.SCHEMA_VERSION,
@@ -353,13 +368,64 @@ def build_admin_router(
             "free_bytes": usage.free if usage else None,
             "timezone": timezone,
             "zfs": zfs_pool_health(),
-            "transaction_recovery": recovery_status(),
+            "transaction_recovery": recovery,
+            "recovery_summary": _recovery_summary(recovery),
             "tools": {
                 "sox": _tool_version(["sox", "--version"]),
                 "flac": _tool_version(["flac", "--version"]),
                 "metaflac": _tool_version(["metaflac", "--version"]),
                 "python": _tool_version(["python", "--version"]),
             },
+        }
+
+    @router.post("/api/maintenance/recovery/recheck")
+    def recheck_recovery_state() -> dict[str, Any]:
+        if job_manager.is_running() or scanner.snapshot()["running"]:
+            raise HTTPException(
+                status_code=409,
+                detail="Recovery recheck waits until conversion and scanning are idle",
+            )
+
+        try:
+            transaction_outcomes = recover_pending_transactions(data_root)
+        except Exception as exc:
+            transaction_outcomes = [
+                {
+                    "source": str(data_root / "transactions"),
+                    "action": "recovery_error",
+                    "reason": f"Transaction recovery recheck failed: {exc}",
+                }
+            ]
+        try:
+            temp_outcomes = cleanup_orphan_temps(
+                music_root,
+                db_path,
+                data_root / "transactions",
+            )
+        except Exception as exc:
+            temp_outcomes = [
+                {
+                    "source": str(music_root),
+                    "action": "recovery_error",
+                    "reason": f"Orphan temp recheck failed: {exc}",
+                }
+            ]
+
+        outcomes: list[dict[str, Any]] = [*transaction_outcomes, *temp_outcomes]
+        current = recovery_status()
+        current[:] = outcomes
+        now = event_time()
+        for item in transaction_outcomes:
+            record_event(db_path, now, "transaction_recovery", item)
+        for item in temp_outcomes:
+            record_event(db_path, now, "orphan_temp_cleanup", item)
+        summary = _recovery_summary(outcomes)
+        record_event(db_path, now, "manual_recovery_recheck", summary)
+        return {
+            "rechecked": True,
+            "safe_for_conversion": not bool(summary["blocked"]),
+            "summary": summary,
+            "outcomes": outcomes,
         }
 
     @router.post("/api/convert/jobs/{job_id}/force-stop")
