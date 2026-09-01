@@ -52,6 +52,7 @@ class ConversionResult:
     source: str
     status: str
     command: list[str]
+    source_sha256: str | None = None
     temp_sha256: str | None = None
     final_sha256: str | None = None
     source_rate: int | None = None
@@ -168,10 +169,15 @@ def _apply_filesystem_metadata(target: Path, expected: FilesystemMetadata) -> No
     _verify_filesystem_metadata(target, expected, "Generated output")
 
 
-def _sha256(path: Path) -> str:
+def _sha256(
+    path: Path,
+    abort_check: Callable[[], bool] | None = None,
+) -> str:
     h = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+            if abort_check is not None and abort_check():
+                raise ConversionError("Force stop requested by user while hashing; original left untouched")
             h.update(chunk)
     return h.hexdigest()
 
@@ -601,6 +607,7 @@ def convert_file(
     journal_root: Path | None = None,
     *,
     cpu_limit_percent: int | None = None,
+    source_pre_hash: bool = False,
     abort_check: Callable[[], bool] | None = None,
 ) -> ConversionResult:
     source = source.resolve(strict=True)
@@ -646,6 +653,13 @@ def convert_file(
 
     try:
         _check_force_stop(combined_abort_check)
+        if source_pre_hash:
+            result.source_sha256 = _sha256(source, combined_abort_check)
+            if source_identity(source) != identity:
+                raise ConversionError(
+                    "Source changed while computing pre-conversion SHA-256; refusing conversion"
+                )
+        _check_force_stop(combined_abort_check)
         proc = _run_sox_command(
             command,
             combined_abort_check,
@@ -678,7 +692,7 @@ def convert_file(
             raise ConversionError(f"Output peak exceeds full scale: {peak:.9f}")
 
         _apply_filesystem_metadata(temp, fs_metadata)
-        result.temp_sha256 = _sha256(temp)
+        result.temp_sha256 = _sha256(temp, combined_abort_check)
         _check_force_stop(combined_abort_check)
 
         if source_identity(source) != identity:

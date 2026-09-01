@@ -197,3 +197,4 @@ loadUiAddon('/static/retry-failed.js');
 loadUiAddon('/static/retry-headroom.js');
 loadUiAddon('/static/maintenance-history.js');
 loadUiAddon('/static/update-status.js');
+loadUiAddon('/static/resource-control.js');

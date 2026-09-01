@@ -42,6 +42,7 @@ def ensure_tables(db_path: Path) -> None:
                 profile_json TEXT,
                 workers INTEGER NOT NULL,
                 source_filter_json TEXT NOT NULL,
+                operational_json TEXT NOT NULL DEFAULT '{}',
                 album_order_json TEXT NOT NULL,
                 pause_requested INTEGER NOT NULL DEFAULT 0,
                 stop_after_album INTEGER NOT NULL DEFAULT 0,
@@ -63,6 +64,7 @@ def ensure_tables(db_path: Path) -> None:
                 started_at TEXT,
                 finished_at TEXT,
                 error_text TEXT,
+                source_sha256 TEXT,
                 temp_sha256 TEXT,
                 final_sha256 TEXT,
                 result_json TEXT,
@@ -75,9 +77,13 @@ def ensure_tables(db_path: Path) -> None:
         job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversion_jobs)").fetchall()}
         if "profile_json" not in job_columns:
             conn.execute("ALTER TABLE conversion_jobs ADD COLUMN profile_json TEXT")
+        if "operational_json" not in job_columns:
+            conn.execute("ALTER TABLE conversion_jobs ADD COLUMN operational_json TEXT NOT NULL DEFAULT '{}'")
         file_columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversion_files)").fetchall()}
         if "defer_count" not in file_columns:
             conn.execute("ALTER TABLE conversion_files ADD COLUMN defer_count INTEGER NOT NULL DEFAULT 0")
+        if "source_sha256" not in file_columns:
+            conn.execute("ALTER TABLE conversion_files ADD COLUMN source_sha256 TEXT")
 
 
 def recover_interrupted(db_path: Path, timezone: str) -> None:
@@ -172,6 +178,7 @@ class ConversionJobManager:
         profile_id: str,
         workers: int,
         source_filter: dict[str, Any],
+        operational: dict[str, Any] | None = None,
     ) -> int:
         if workers not in (1, 2):
             raise JobError("Workers must be 1 or 2")
@@ -188,13 +195,16 @@ class ConversionJobManager:
             {"albumartist": a["albumartist"], "album": a["album"], "folder": a["folder"]}
             for a in review["albums"]
         ]
+        operational_payload = {
+            "source_pre_hash": bool((operational or {}).get("source_pre_hash", False)),
+        }
         created_at = self._now()
         with db.session(self.db_path) as conn:
             cur = conn.execute(
                 """
                 INSERT INTO conversion_jobs(
-                  created_at,status,profile_id,profile_json,workers,source_filter_json,album_order_json
-                ) VALUES(?,?,?,?,?,?,?)
+                  created_at,status,profile_id,profile_json,workers,source_filter_json,operational_json,album_order_json
+                ) VALUES(?,?,?,?,?,?,?,?)
                 """,
                 (
                     created_at,
@@ -203,6 +213,7 @@ class ConversionJobManager:
                     json.dumps(resolved_profile.to_dict(), separators=(",", ":"), sort_keys=True),
                     workers,
                     json.dumps(source_filter, separators=(",", ":")),
+                    json.dumps(operational_payload, separators=(",", ":"), sort_keys=True),
                     json.dumps(album_order, separators=(",", ":")),
                 ),
             )
@@ -228,7 +239,12 @@ class ConversionJobManager:
             job_id,
             created_at,
             "job_created",
-            {"workers": workers, "profile_id": profile_id, "albums": len(album_order)},
+            {
+                "workers": workers,
+                "profile_id": profile_id,
+                "albums": len(album_order),
+                "source_pre_hash": operational_payload["source_pre_hash"],
+            },
         )
         return job_id
 
@@ -328,6 +344,7 @@ class ConversionJobManager:
         path: str,
         profile: ResampleProfile,
         expected_bytes: int,
+        source_pre_hash: bool = False,
     ) -> dict[str, Any]:
         source = Path(path)
         with db.session(self.db_path) as conn:
@@ -360,9 +377,11 @@ class ConversionJobManager:
                     source,
                     profile,
                     cpu_limit_percent=cpu_limit_percent,
+                    source_pre_hash=source_pre_hash,
                 )
                 payload = asdict(result)
                 payload["cpu_limit_percent"] = cpu_limit_percent
+                payload["source_pre_hash"] = bool(source_pre_hash)
                 payload["advisory_busy_guard_supported"] = bool(guard.supported)
                 finished = self._now()
 
@@ -385,13 +404,14 @@ class ConversionJobManager:
                     conn.execute(
                         """
                         UPDATE conversion_files
-                        SET status=?,finished_at=?,error_text=?,temp_sha256=?,final_sha256=?,result_json=?
+                        SET status=?,finished_at=?,error_text=?,source_sha256=?,temp_sha256=?,final_sha256=?,result_json=?
                         WHERE id=?
                         """,
                         (
                             "completed" if result.status == "completed" else "failed",
                             finished,
                             result.error,
+                            result.source_sha256,
                             result.temp_sha256,
                             result.final_sha256,
                             json.dumps(payload, separators=(",", ":")),
@@ -418,6 +438,7 @@ class ConversionJobManager:
         self,
         job_id: int,
         profile: ResampleProfile,
+        source_pre_hash: bool,
     ) -> tuple[str, str | None]:
         """Retry each advisory-busy source once, in original batch order."""
         terminal_status = "completed"
@@ -453,6 +474,7 @@ class ConversionJobManager:
                 str(row["path"]),
                 profile,
                 int(row["source_bytes"]),
+                source_pre_hash,
             )
             if payload.get("status") == "failed":
                 terminal_error = payload.get("error") or terminal_error
@@ -476,6 +498,13 @@ class ConversionJobManager:
                 else:
                     # Compatibility for jobs created before profile snapshots were introduced.
                     profile = get_profile(profile_id)
+                try:
+                    operational = json.loads(job["operational_json"] or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    operational = {}
+                if not isinstance(operational, dict):
+                    operational = {}
+                source_pre_hash = bool(operational.get("source_pre_hash", False))
                 album_indices = [
                     r["album_index"] for r in conn.execute(
                         "SELECT DISTINCT album_index FROM conversion_files WHERE job_id=? ORDER BY album_index",
@@ -545,6 +574,7 @@ class ConversionJobManager:
                                 r["path"],
                                 profile,
                                 int(r["source_bytes"]),
+                                source_pre_hash,
                             )
                             for r in wave
                         ]
@@ -560,7 +590,9 @@ class ConversionJobManager:
                     break
 
             if terminal_status == "completed":
-                deferred_status, deferred_error = self._retry_deferred_files(job_id, profile)
+                deferred_status, deferred_error = self._retry_deferred_files(
+                    job_id, profile, source_pre_hash
+                )
                 terminal_status = deferred_status
                 terminal_error = deferred_error or terminal_error
         except Exception as exc:
@@ -681,6 +713,12 @@ class ConversionJobManager:
         else:
             result["profile"] = None
         result.pop("profile_json", None)
+        try:
+            operational = json.loads(result.get("operational_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            operational = {}
+        result["operational"] = operational if isinstance(operational, dict) else {}
+        result.pop("operational_json", None)
         result["counts"] = counts
         result["bytes_by_status"] = bytes_by_status
         result["total_files"] = total_files

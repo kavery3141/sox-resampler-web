@@ -21,7 +21,7 @@ function retryFailedInstall(){
     card.innerHTML=`
       <div class="sectionTitle"><div><h3 style="margin:0">Retry Failed Files</h3><div id="retryFailedSubtitle" class="muted"></div></div><span class="spacer"></span><button id="retryFailedClose">Close Retry Review</button></div>
       <div class="notice info retryFailedPrinciple">This creates a new manual batch containing only the exact files that failed. The original job's resolved DSP snapshot is reused. Nothing is written until you acknowledge replacement and press Start Retry.</div>
-      <div class="toolbar"><label>Concurrent conversions <select id="retryFailedWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option></select></label><button id="retryFailedRefresh">Refresh Retry Review</button></div>
+      <div class="toolbar"><label>Concurrent conversions <select id="retryFailedWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option></select></label><label><input id="retryFailedSourcePreHash" type="checkbox"> SHA-256 pre-hash sources</label><button id="retryFailedRefresh">Refresh Retry Review</button></div>
       <div id="retryFailedStatus" class="notice">Preparing retry preflight…</div>
       <div id="retryFailedSummary" class="reviewGrid hidden"></div>
       <div id="retryFailedAlbums" class="retryFailedAlbums"></div>
@@ -31,6 +31,7 @@ function retryFailedInstall(){
     $('retryFailedClose').onclick=retryFailedClose;
     $('retryFailedRefresh').onclick=retryFailedRefresh;
     $('retryFailedWorkers').onchange=()=>{retryFailedResetAck();retryFailedRefresh()};
+    $('retryFailedSourcePreHash').onchange=()=>{retryFailedResetAck();retryFailedRefresh()};
     $('retryFailedAck').onchange=retryFailedEnableStart;
     $('retryFailedStart').onclick=retryFailedStart;
   }
@@ -66,7 +67,7 @@ function retryFailedRender(review){
   $('retryFailedStatus').className='notice '+(review.can_start?'good':'bad');
   $('retryFailedStatus').textContent=review.can_start?'Retry preflight passed. Review the exact failed files and acknowledge replacement to enable Start Retry.':(review.blockers?.[0]||'Retry cannot start yet.');
   $('retryFailedSummary').classList.remove('hidden');
-  $('retryFailedSummary').innerHTML=`<div class="reviewMetric"><span>Failed files</span><strong>${retry.failed_files||0}</strong></div><div class="reviewMetric"><span>Albums</span><strong>${review.album_count||0}</strong></div><div class="reviewMetric"><span>Resolved DSP</span><strong>${esc(review.profile?.name||review.profile?.id||'Snapshot')}</strong></div><div class="reviewMetric"><span>Source size</span><strong>${fmtBytes(review.source_bytes)}</strong></div><div class="reviewMetric"><span>Free space</span><strong>${fmtBytes(review.free_bytes)}</strong></div><div class="reviewMetric"><span>ZFS</span><strong>${review.zfs?.ok?'Healthy':'Blocked'}</strong></div>`;
+  $('retryFailedSummary').innerHTML=`<div class="reviewMetric"><span>Failed files</span><strong>${retry.failed_files||0}</strong></div><div class="reviewMetric"><span>Albums</span><strong>${review.album_count||0}</strong></div><div class="reviewMetric"><span>Resolved DSP</span><strong>${esc(review.profile?.name||review.profile?.id||'Snapshot')}</strong></div><div class="reviewMetric"><span>Source size</span><strong>${fmtBytes(review.source_bytes)}</strong></div><div class="reviewMetric"><span>Free space</span><strong>${fmtBytes(review.free_bytes)}</strong></div><div class="reviewMetric"><span>ZFS</span><strong>${review.zfs?.ok?'Healthy':'Blocked'}</strong></div><div class="reviewMetric"><span>Source pre-hash</span><strong>${review.source_pre_hash?'Enabled':'Disabled'}</strong></div>`;
   $('retryFailedAlbums').innerHTML=`<div class="retryFailedDsp"><strong>Exact DSP snapshot</strong><div class="muted">${esc(retryFailedProfileSummary(review.profile||{}))}</div></div>${(review.albums||[]).map(retryFailedAlbumHtml).join('')}`;
   $('retryFailedAckArea').classList.toggle('hidden',!review.can_start);
   $('retryFailedActions').classList.toggle('hidden',!review.can_start);
@@ -74,7 +75,7 @@ function retryFailedRender(review){
 }
 async function retryFailedPrepare(jobId){
   if(!jobId)return;
-  retryFailedInstall();retryFailedState.sourceJobId=Number(jobId);$('retryFailedWorkers').value='1';$('retryFailedCard').classList.remove('hidden');
+  retryFailedInstall();retryFailedState.sourceJobId=Number(jobId);$('retryFailedWorkers').value='1';$('retryFailedSourcePreHash').checked=false;$('retryFailedCard').classList.remove('hidden');
   $('retryFailedCard').scrollIntoView({behavior:'smooth',block:'start'});
   await retryFailedRefresh();
 }
@@ -83,7 +84,8 @@ async function retryFailedRefresh(){
   retryFailedResetAck();$('retryFailedStatus').className='notice';$('retryFailedStatus').textContent='Running fresh retry preflight checks…';
   try{
     const workers=Number($('retryFailedWorkers').value||1);
-    const response=await fetch(`/api/convert/jobs/${jobId}/retry-review?workers=${workers}`);
+    const params=new URLSearchParams({workers:String(workers),source_pre_hash:String(Boolean($('retryFailedSourcePreHash').checked))});
+    const response=await fetch(`/api/convert/jobs/${jobId}/retry-review?${params}`);
     const data=await response.json();
     if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Retry review failed');
     retryFailedRender(data);
@@ -96,7 +98,7 @@ async function retryFailedStart(){
   if(!jobId||!retryFailedState.review?.can_start||!$('retryFailedAck').checked)return;
   const button=$('retryFailedStart');button.disabled=true;const old=button.innerHTML;button.textContent='Starting Retry…';
   try{
-    const response=await fetch(`/api/convert/jobs/${jobId}/retry-start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workers:Number($('retryFailedWorkers').value||1),acknowledged_replace_in_place:true})});
+    const response=await fetch(`/api/convert/jobs/${jobId}/retry-start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workers:Number($('retryFailedWorkers').value||1),source_pre_hash:Boolean($('retryFailedSourcePreHash').checked),acknowledged_replace_in_place:true})});
     const data=await response.json();
     if(!response.ok){const detail=typeof data.detail==='string'?data.detail:(data.detail?.blockers||[]).join('; ');throw new Error(detail||'Unable to start retry')}
     retryFailedClose();watchJob(data.job_id,true);

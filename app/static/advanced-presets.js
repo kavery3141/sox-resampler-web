@@ -127,6 +127,7 @@ function advancedInstallPanel(){
         <label>Headroom (dB)<input id="advHeadroom" type="number" min="-30" max="0" step="0.1"></label>
         <label class="advancedCheck"><input id="advAliasing" type="checkbox">Allow aliasing / imaging</label>
       </div>
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)"><strong>Per-batch safety</strong><label class="advancedCheck" style="margin-top:10px"><input id="advSourcePreHash" type="checkbox">SHA-256 pre-hash each source FLAC before SoX</label><div class="muted" style="margin-top:6px">Disabled by default. This adds one full source-file read before conversion, is recorded with the job, and is never saved in DSP presets.</div></div>
       <div class="advancedActions"><button id="resetAdvanced">Reset to Selected Preset</button><button id="saveCustomPreset" class="primary">Save as Custom Preset</button><button id="updateCustomPreset" class="hidden">Update Custom Preset</button><button id="duplicatePreset">Duplicate Selected Preset</button><button id="exportPreset">Export JSON</button><button id="deleteCustomPreset" class="danger hidden">Delete Custom Preset</button></div>
       <details class="presetIdentity"><summary>Custom preset name, description and notes</summary><div class="advancedIdentityGrid"><label>Preset name<input id="advPresetName" type="text" maxlength="100"></label><label>Description<textarea id="advDescription" rows="3" maxlength="2000"></textarea></label><label>Notes<textarea id="advNotes" rows="3" maxlength="4000"></textarea></label></div></details>
       <div class="advancedImport"><div><strong>Import preset JSON</strong><div class="muted">Files are validated and previewed before anything is saved.</div></div><input id="presetImportFile" type="file" accept="application/json,.json"><button id="importPresetButton" disabled>Import Validated Preset</button></div>
@@ -146,6 +147,11 @@ function advancedInstallPanel(){
   $('deleteCustomPreset').onclick=advancedDelete;
   $('presetImportFile').onchange=advancedPreviewImport;
   $('importPresetButton').onclick=advancedImport;
+  $('advSourcePreHash').onchange=()=>{resetAck();advancedMessage($('advSourcePreHash').checked?'Source SHA-256 pre-hash enabled for this batch. Refresh Review before conversion.':'Source SHA-256 pre-hash disabled for this batch. Refresh Review before conversion.','info')};
+}
+
+function resetOperationalBatchOptions(){
+  if($('advSourcePreHash'))$('advSourcePreHash').checked=false;
 }
 
 async function advancedFetchJson(url,options){
@@ -227,13 +233,14 @@ function advancedRenderResolvedReview(){
   const profile=state.review.profile;
   let box=$('resolvedDspSummary');
   if(!box){box=document.createElement('div');box.id='resolvedDspSummary';box.className='resolvedDspSummary';$('reviewSummary').insertAdjacentElement('afterend',box)}
-  box.innerHTML=`<div class="resolvedDspTitle"><strong>Resolved DSP for this batch</strong>${advancedState.override?'<span class="badge warn">Batch override</span>':''}</div><div class="resolvedDspGrid"><span>Target</span><strong>${Number(profile.target_rate).toLocaleString()} Hz</strong><span>Bit depth</span><strong>${esc(String(profile.bit_depth))}</strong><span>Quality</span><strong>${esc(profile.quality)}</strong><span>Passband</span><strong>${esc(profile.passband_percent)}%</strong><span>Phase</span><strong>${esc(profile.phase_percent)}%</strong><span>Aliasing</span><strong>${profile.allow_aliasing?'Allowed':'Disabled'}</strong><span>Compression</span><strong>FLAC ${esc(profile.flac_compression)}</strong><span>Dither</span><strong>${esc(profile.dither||'Automatic TPDF')}</strong><span>Headroom</span><strong>${Number(profile.headroom_db||0).toFixed(1)} dB</strong></div>`;
+  box.innerHTML=`<div class="resolvedDspTitle"><strong>Resolved DSP for this batch</strong>${advancedState.override?'<span class="badge warn">Batch override</span>':''}</div><div class="resolvedDspGrid"><span>Target</span><strong>${Number(profile.target_rate).toLocaleString()} Hz</strong><span>Bit depth</span><strong>${esc(String(profile.bit_depth))}</strong><span>Quality</span><strong>${esc(profile.quality)}</strong><span>Passband</span><strong>${esc(profile.passband_percent)}%</strong><span>Phase</span><strong>${esc(profile.phase_percent)}%</strong><span>Aliasing</span><strong>${profile.allow_aliasing?'Allowed':'Disabled'}</strong><span>Compression</span><strong>FLAC ${esc(profile.flac_compression)}</strong><span>Dither</span><strong>${esc(profile.dither||'Automatic TPDF')}</strong><span>Headroom</span><strong>${Number(profile.headroom_db||0).toFixed(1)} dB</strong></div><div class="resolvedDspTitle" style="margin-top:12px"><strong>Per-batch safety</strong></div><div class="resolvedDspGrid"><span>Source SHA-256 pre-hash</span><strong>${state.review.source_pre_hash?'Enabled':'Disabled'}</strong></div>`;
 }
 
 const advancedBaseBuildReviewBody=buildReviewBody;
 buildReviewBody=function(){
   const body=advancedBaseBuildReviewBody();
   if(advancedState.override)body.profile_override={...advancedState.override};
+  body.source_pre_hash=Boolean($('advSourcePreHash')?.checked);
   return body;
 };
 const advancedBaseRefreshReview=refreshReview;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -41,7 +42,8 @@ class ConverterIntegrationTest(unittest.TestCase):
             os.setxattr(source, "user.sox-resampler-test", b"preserve-me")
             os.utime(source, ns=(old_mtime_ns, old_mtime_ns))
 
-            result = convert_file(source, FACTORY_DEFAULTS)
+            expected_source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+            result = convert_file(source, FACTORY_DEFAULTS, source_pre_hash=True)
             self.assertEqual(result.status, "completed", result.error)
             self.assertTrue(source.exists())
             self.assertFalse(source.with_name(f".{source.name}.sox-resampler.tmp.flac").exists())
@@ -54,6 +56,7 @@ class ConverterIntegrationTest(unittest.TestCase):
             self.assertEqual(source.stat().st_mtime_ns, old_mtime_ns)
             self.assertEqual(source.stat().st_mode & 0o777, 0o664)
             self.assertEqual(os.getxattr(source, "user.sox-resampler-test"), b"preserve-me")
+            self.assertEqual(result.source_sha256, expected_source_sha256)
             self.assertIsNotNone(result.temp_sha256)
             self.assertEqual(result.temp_sha256, result.final_sha256)
 

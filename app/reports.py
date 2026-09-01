@@ -71,6 +71,7 @@ def render_review_txt(review: dict[str, Any], timezone: str) -> str:
         f"FLAC compression: {profile.get('flac_compression') if profile.get('flac_compression') is not None else ''}",
         f"Workers: {review.get('workers') or ''}",
         f"CPU cap per worker: {str(review.get('cpu_limit_percent')) + '%' if review.get('cpu_limit_percent') is not None else 'disabled'}",
+        f"Source SHA-256 pre-hash: {'enabled' if review.get('source_pre_hash') else 'disabled'}",
         f"Albums: {review.get('album_count') or 0}",
         f"Matching tracks: {review.get('matching_tracks') or 0}",
         f"Source bytes: {review.get('source_bytes') or 0}",
@@ -133,6 +134,7 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
         "flac_compression",
         "workers",
         "cpu_limit_percent",
+        "source_pre_hash",
         "albumartist",
         "album",
         "folder",
@@ -174,6 +176,7 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
                     "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
                     "workers": review.get("workers") or "",
                     "cpu_limit_percent": review.get("cpu_limit_percent") if review.get("cpu_limit_percent") is not None else "",
+                    "source_pre_hash": bool(review.get("source_pre_hash")),
                     "albumartist": album.get("albumartist") or "",
                     "album": album.get("album") or "",
                     "folder": album.get("folder") or "",
@@ -245,6 +248,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
                 "source_bits": payload.get("source_bits"),
                 "target_bits": payload.get("target_bits"),
                 "cpu_limit_percent": payload.get("cpu_limit_percent"),
+                "source_sha256": item.get("source_sha256") or payload.get("source_sha256"),
                 "temp_sha256": item.get("temp_sha256"),
                 "final_sha256": item.get("final_sha256"),
                 "index_refresh_error": payload.get("index_refresh_error"),
@@ -260,6 +264,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         album_order = json.loads(job_data.get("album_order_json") or "[]")
     except json.JSONDecodeError:
         album_order = []
+    operational = _result_payload(job_data.get("operational_json"))
     try:
         profile = json.loads(job_data.get("profile_json") or "{}")
     except json.JSONDecodeError:
@@ -279,6 +284,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         "profile": profile,
         "workers": int(job_data.get("workers") or 1),
         "source_filter": source_filter,
+        "operational": operational,
         "album_order": album_order,
         "job_error": job_data.get("error_text"),
         "events": events,
@@ -318,6 +324,7 @@ def render_job_txt(report: dict[str, Any]) -> str:
         f"Headroom: {profile.get('headroom_db') if profile.get('headroom_db') is not None else 0.0} dB",
         f"FLAC compression: {profile.get('flac_compression') if profile.get('flac_compression') is not None else ''}",
         f"Final concurrency: {report.get('workers')}",
+        f"Source SHA-256 pre-hash: {'enabled' if (report.get('operational') or {}).get('source_pre_hash') else 'disabled'}",
         f"Files: {totals['files']} total, {totals['completed']} completed, {totals['failed']} failed, {totals['remaining']} remaining",
         f"Source bytes: {totals['source_bytes']}",
         f"Final bytes: {totals['final_bytes']}",
@@ -351,8 +358,10 @@ def render_job_txt(report: dict[str, Any]) -> str:
             lines.append(f"  Error: {item['error']}")
         if item.get("index_refresh_error"):
             lines.append(f"  Index refresh warning: {item['index_refresh_error']}")
+        if item.get("source_sha256"):
+            lines.append(f"  Source SHA-256: {item['source_sha256']}")
         if item.get("final_sha256"):
-            lines.append(f"  SHA-256: {item['final_sha256']}")
+            lines.append(f"  Final SHA-256: {item['final_sha256']}")
     return "\n".join(lines) + "\n"
 
 
@@ -374,6 +383,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
         "headroom_db",
         "flac_compression",
         "final_concurrency",
+        "source_pre_hash",
         "job_event_timeline",
         "albumartist",
         "album",
@@ -390,6 +400,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
         "finished_at",
         "error",
         "index_refresh_error",
+        "source_sha256",
         "final_sha256",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -410,6 +421,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "headroom_db": profile.get("headroom_db") if profile.get("headroom_db") is not None else 0.0,
                 "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
                 "final_concurrency": report.get("workers") or "",
+                "source_pre_hash": bool((report.get("operational") or {}).get("source_pre_hash")),
                 "job_event_timeline": event_timeline,
                 "albumartist": item.get("albumartist") or "",
                 "album": item.get("album") or "",
@@ -426,6 +438,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "finished_at": item.get("finished_at") or "",
                 "error": item.get("error") or "",
                 "index_refresh_error": item.get("index_refresh_error") or "",
+                "source_sha256": item.get("source_sha256") or "",
                 "final_sha256": item.get("final_sha256") or "",
             }
         )

@@ -83,6 +83,7 @@ class BatchReviewRequest(BaseModel):
     profile_id: str = "foobar-ultra-37-48k"
     profile_override: dict[str, Any] | None = None
     workers: int = 1
+    source_pre_hash: bool = False
 
 
 class BatchStartRequest(BatchReviewRequest):
@@ -91,6 +92,7 @@ class BatchStartRequest(BatchReviewRequest):
 
 class RetryStartRequest(BaseModel):
     workers: int = 1
+    source_pre_hash: bool = False
     acknowledged_replace_in_place: bool = False
 
 
@@ -230,6 +232,7 @@ def _review_resolved(
     above: int | None,
     profile: ResampleProfile,
     workers: int,
+    source_pre_hash: bool = False,
     include_paths: set[str] | None = None,
 ) -> dict[str, Any]:
     cleaned_rates = sorted({int(r) for r in rates if 8000 <= int(r) <= 768000})
@@ -250,6 +253,7 @@ def _review_resolved(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    review["source_pre_hash"] = bool(source_pre_hash)
     return _apply_operational_review_checks(review, reserve)
 
 
@@ -265,6 +269,7 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
         above=request.above,
         profile=profile,
         workers=request.workers,
+        source_pre_hash=request.source_pre_hash,
     )
 
 
@@ -273,7 +278,9 @@ def _retry_error(exc: RetrySpecError) -> HTTPException:
     return HTTPException(status_code=404 if detail == "Job not found" else 409, detail=detail)
 
 
-def _retry_review(job_id: int, workers: int) -> tuple[dict[str, Any], dict[str, Any]]:
+def _retry_review(
+    job_id: int, workers: int, source_pre_hash: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if workers not in (1, 2):
         raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
     try:
@@ -286,6 +293,7 @@ def _retry_review(job_id: int, workers: int) -> tuple[dict[str, Any], dict[str, 
         above=spec["above"],
         profile=spec["profile"],
         workers=workers,
+        source_pre_hash=source_pre_hash,
         include_paths=set(spec["paths"]),
     )
     review["retry"] = {
@@ -302,6 +310,7 @@ def _headroom_retry_review(
     job_id: int,
     workers: int,
     headroom_db: float | None,
+    source_pre_hash: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if workers not in (1, 2):
         raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
@@ -315,6 +324,7 @@ def _headroom_retry_review(
         above=spec["above"],
         profile=spec["profile"],
         workers=workers,
+        source_pre_hash=source_pre_hash,
         include_paths=set(spec["paths"]),
     )
     review["retry"] = {
@@ -551,6 +561,7 @@ def start_batch(request: BatchStartRequest) -> dict[str, Any]:
             request.profile_id,
             request.workers,
             {"rates": request.rates, "above": request.above},
+            {"source_pre_hash": request.source_pre_hash},
         )
         job_manager.start(job_id)
     except JobError as exc:
@@ -580,8 +591,12 @@ def conversion_retry_options(job_id: int) -> dict[str, Any]:
 
 
 @app.get("/api/convert/jobs/{job_id}/retry-review")
-def retry_failed_review(job_id: int, workers: int = Query(default=1, ge=1, le=2)) -> dict[str, Any]:
-    review, _ = _retry_review(job_id, workers)
+def retry_failed_review(
+    job_id: int,
+    workers: int = Query(default=1, ge=1, le=2),
+    source_pre_hash: bool = Query(default=False),
+) -> dict[str, Any]:
+    review, _ = _retry_review(job_id, workers, source_pre_hash)
     return review
 
 
@@ -589,7 +604,7 @@ def retry_failed_review(job_id: int, workers: int = Query(default=1, ge=1, le=2)
 def retry_failed_start(job_id: int, request: RetryStartRequest) -> dict[str, Any]:
     if not request.acknowledged_replace_in_place:
         raise HTTPException(status_code=400, detail="In-place replacement acknowledgment is required")
-    review, spec = _retry_review(job_id, request.workers)
+    review, spec = _retry_review(job_id, request.workers, request.source_pre_hash)
     if not review["can_start"]:
         raise HTTPException(
             status_code=409,
@@ -607,6 +622,7 @@ def retry_failed_start(job_id: int, request: RetryStartRequest) -> dict[str, Any
             spec["profile_id"],
             request.workers,
             source_filter,
+            {"source_pre_hash": request.source_pre_hash},
         )
         job_manager.start(new_job_id)
     except JobError as exc:
@@ -624,8 +640,9 @@ def retry_headroom_review(
     job_id: int,
     workers: int = Query(default=1, ge=1, le=2),
     headroom_db: float | None = Query(default=None, ge=-30.0, lt=0.0),
+    source_pre_hash: bool = Query(default=False),
 ) -> dict[str, Any]:
-    review, _ = _headroom_retry_review(job_id, workers, headroom_db)
+    review, _ = _headroom_retry_review(job_id, workers, headroom_db, source_pre_hash)
     return review
 
 
@@ -633,7 +650,9 @@ def retry_headroom_review(
 def retry_headroom_start(job_id: int, request: HeadroomRetryStartRequest) -> dict[str, Any]:
     if not request.acknowledged_replace_in_place:
         raise HTTPException(status_code=400, detail="In-place replacement acknowledgment is required")
-    review, spec = _headroom_retry_review(job_id, request.workers, request.headroom_db)
+    review, spec = _headroom_retry_review(
+        job_id, request.workers, request.headroom_db, request.source_pre_hash
+    )
     if not review["can_start"]:
         raise HTTPException(
             status_code=409,
@@ -653,6 +672,7 @@ def retry_headroom_start(job_id: int, request: HeadroomRetryStartRequest) -> dic
             spec["profile_id"],
             request.workers,
             source_filter,
+            {"source_pre_hash": request.source_pre_hash},
         )
         job_manager.start(new_job_id)
     except JobError as exc:

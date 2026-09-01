@@ -31,7 +31,7 @@ This is intentionally **not** described as ordinary stock SoX `rate -v`, and the
 
 ## File-safety model
 
-Each source FLAC is converted to a hidden same-directory temporary file. Before replacement the app verifies technical output properties, user metadata and embedded pictures, performs a full FLAC decode test, checks clipping, preserves filesystem metadata, revalidates source identity, and hashes the verified output. Replacement uses a persistent crash-recovery journal and an atomic same-filesystem exchange. The old source remains available until the new file has passed final verification; failures leave the original untouched.
+Each source FLAC is converted to a hidden same-directory temporary file. Before replacement the app verifies technical output properties, user metadata and embedded pictures, performs a full FLAC decode test, checks clipping, preserves filesystem metadata, revalidates source identity, and hashes the verified output. Advanced batch safety can optionally SHA-256 pre-hash each source before SoX; this is disabled by default, is recorded in the job/report, and is deliberately not stored in DSP presets. Replacement uses a persistent crash-recovery journal and an atomic same-filesystem exchange. The old source remains available until the new file has passed final verification; failures leave the original untouched.
 
 Interrupted replacement journals and orphan temp files are reconciled conservatively at startup and during maintenance. Ambiguous states require manual attention rather than silently promoting or deleting files.
 

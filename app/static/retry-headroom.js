@@ -23,6 +23,7 @@ function retryHeadroomInstall(){
       <div class="toolbar">
         <label>Total headroom (dB)<input id="retryHeadroomDb" type="number" min="-30" max="-0.1" step="0.1"></label>
         <label>Concurrent conversions <select id="retryHeadroomWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option></select></label>
+        <label><input id="retryHeadroomSourcePreHash" type="checkbox"> SHA-256 pre-hash sources</label>
         <button id="retryHeadroomRefresh">Refresh Headroom Review</button>
       </div>
       <div id="retryHeadroomChange" class="notice info hidden"></div>
@@ -35,6 +36,7 @@ function retryHeadroomInstall(){
     $('retryHeadroomClose').onclick=retryHeadroomClose;
     $('retryHeadroomRefresh').onclick=retryHeadroomRefresh;
     $('retryHeadroomWorkers').onchange=()=>{retryHeadroomResetAck();retryHeadroomRefresh()};
+    $('retryHeadroomSourcePreHash').onchange=()=>{retryHeadroomResetAck();retryHeadroomRefresh()};
     $('retryHeadroomDb').onchange=()=>{retryHeadroomResetAck();retryHeadroomRefresh()};
     $('retryHeadroomAck').onchange=retryHeadroomEnableStart;
     $('retryHeadroomStart').onclick=retryHeadroomStart;
@@ -71,7 +73,7 @@ async function retryHeadroomPrepare(jobId){
   try{
     const options=await retryHeadroomOptions(jobId);retryHeadroomState.options=options;
     if(!options.retry_with_headroom_available)throw new Error(options.clipping_failures?'Maximum supported headroom is already in use.':'This job has no clipping failures eligible for Retry with Headroom.');
-    $('retryHeadroomDb').value=Number(options.default_headroom_db).toFixed(1);$('retryHeadroomWorkers').value='1';$('retryHeadroomCard').classList.remove('hidden');
+    $('retryHeadroomDb').value=Number(options.default_headroom_db).toFixed(1);$('retryHeadroomWorkers').value='1';$('retryHeadroomSourcePreHash').checked=false;$('retryHeadroomCard').classList.remove('hidden');
     $('retryHeadroomCard').scrollIntoView({behavior:'smooth',block:'start'});await retryHeadroomRefresh();
   }catch(error){
     $('jobError').classList.remove('hidden');$('jobError').textContent=error.message;
@@ -82,14 +84,14 @@ async function retryHeadroomRefresh(){
   const headroom=Number($('retryHeadroomDb').value);const workers=Number($('retryHeadroomWorkers').value||1);
   retryHeadroomResetAck();$('retryHeadroomStatus').className='notice';$('retryHeadroomStatus').textContent='Running fresh clipping/headroom preflight checks…';
   try{
-    const params=new URLSearchParams({workers:String(workers),headroom_db:String(headroom)});
+    const params=new URLSearchParams({workers:String(workers),headroom_db:String(headroom),source_pre_hash:String(Boolean($('retryHeadroomSourcePreHash').checked))});
     const response=await fetch(`/api/convert/jobs/${jobId}/retry-headroom-review?${params}`);const review=await response.json();
     if(!response.ok)throw new Error(typeof review.detail==='string'?review.detail:'Headroom retry review failed');
     retryHeadroomState.review=review;const retry=review.retry||{};
     $('retryHeadroomSubtitle').textContent=`Source job ${retry.source_job_id} · ${retry.clipping_failures||0} clipping-failed file${retry.clipping_failures===1?'':'s'}`;
     $('retryHeadroomChange').className='notice info';$('retryHeadroomChange').textContent=`Headroom change: ${Number(retry.original_headroom_db||0).toFixed(1)} dB → ${Number(retry.headroom_db).toFixed(1)} dB. All other resolved DSP settings remain from the source job snapshot.`;
     $('retryHeadroomStatus').className='notice '+(review.can_start?'good':'bad');$('retryHeadroomStatus').textContent=review.can_start?'Headroom retry preflight passed. Review the exact files and DSP change, then acknowledge replacement to enable Start Headroom Retry.':(review.blockers?.[0]||'Headroom retry cannot start yet.');
-    $('retryHeadroomSummary').classList.remove('hidden');$('retryHeadroomSummary').innerHTML=`<div class="reviewMetric"><span>Clipping failures</span><strong>${retry.clipping_failures||0}</strong></div><div class="reviewMetric"><span>Headroom</span><strong>${Number(retry.headroom_db).toFixed(1)} dB</strong></div><div class="reviewMetric"><span>Source size</span><strong>${fmtBytes(review.source_bytes)}</strong></div><div class="reviewMetric"><span>Resolved DSP</span><strong>${esc(review.profile?.name||review.profile?.id||'Snapshot')}</strong></div><div class="reviewMetric"><span>Free space</span><strong>${fmtBytes(review.free_bytes)}</strong></div><div class="reviewMetric"><span>ZFS</span><strong>${review.zfs?.ok?'Healthy':'Blocked'}</strong></div>`;
+    $('retryHeadroomSummary').classList.remove('hidden');$('retryHeadroomSummary').innerHTML=`<div class="reviewMetric"><span>Clipping failures</span><strong>${retry.clipping_failures||0}</strong></div><div class="reviewMetric"><span>Headroom</span><strong>${Number(retry.headroom_db).toFixed(1)} dB</strong></div><div class="reviewMetric"><span>Source size</span><strong>${fmtBytes(review.source_bytes)}</strong></div><div class="reviewMetric"><span>Resolved DSP</span><strong>${esc(review.profile?.name||review.profile?.id||'Snapshot')}</strong></div><div class="reviewMetric"><span>Free space</span><strong>${fmtBytes(review.free_bytes)}</strong></div><div class="reviewMetric"><span>ZFS</span><strong>${review.zfs?.ok?'Healthy':'Blocked'}</strong></div><div class="reviewMetric"><span>Source pre-hash</span><strong>${review.source_pre_hash?'Enabled':'Disabled'}</strong></div>`;
     $('retryHeadroomAlbums').innerHTML=`<div class="retryHeadroomDsp"><strong>Resolved retry DSP</strong><div class="muted">${esc(retryHeadroomProfileText(review.profile||{}))}</div></div>${(review.albums||[]).map(retryHeadroomAlbumHtml).join('')}`;
     $('retryHeadroomAckArea').classList.toggle('hidden',!review.can_start);$('retryHeadroomActions').classList.toggle('hidden',!review.can_start);
   }catch(error){
@@ -100,7 +102,7 @@ async function retryHeadroomStart(){
   const jobId=retryHeadroomState.sourceJobId;if(!jobId||!retryHeadroomState.review?.can_start||!$('retryHeadroomAck').checked)return;
   const button=$('retryHeadroomStart');button.disabled=true;const old=button.innerHTML;button.textContent='Starting Headroom Retry…';
   try{
-    const body={workers:Number($('retryHeadroomWorkers').value||1),headroom_db:Number($('retryHeadroomDb').value),acknowledged_replace_in_place:true};
+    const body={workers:Number($('retryHeadroomWorkers').value||1),headroom_db:Number($('retryHeadroomDb').value),source_pre_hash:Boolean($('retryHeadroomSourcePreHash').checked),acknowledged_replace_in_place:true};
     const response=await fetch(`/api/convert/jobs/${jobId}/retry-headroom-start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();
     if(!response.ok){const detail=typeof data.detail==='string'?data.detail:(data.detail?.blockers||[]).join('; ');throw new Error(detail||'Unable to start headroom retry')}
     retryHeadroomClose();watchJob(data.job_id,true);
