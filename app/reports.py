@@ -88,7 +88,7 @@ def render_review_txt(review: dict[str, Any], timezone: str) -> str:
     lines.extend(["", "Albums:"])
     for album in review.get("albums") or []:
         lines.append(
-            f"{album.get('albumartist') or ''} / {album.get('album') or ''} / {album.get('folder') or ''}"
+            f"{album.get('albumartist') or ''} / {album.get('album') or ''} / {album.get('display_folder') or album.get('folder') or ''}"
         )
         lines.append(
             "  "
@@ -104,7 +104,7 @@ def render_review_txt(review: dict[str, Any], timezone: str) -> str:
         for track in album.get("tracks") or []:
             lines.append(
                 "  Track: "
-                f"{track.get('path') or ''}; "
+                f"{track.get('display_path') or track.get('path') or ''}; "
                 f"{track.get('sample_rate') or ''} -> {track.get('target_rate') or profile.get('target_rate') or ''} Hz; "
                 f"ratio {track.get('resample_ratio') or ''}; "
                 f"{track.get('bits_per_sample') or ''} -> {track.get('target_bits_per_sample') or track.get('bits_per_sample') or ''}-bit; "
@@ -179,8 +179,8 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
                     "source_pre_hash": bool(review.get("source_pre_hash")),
                     "albumartist": album.get("albumartist") or "",
                     "album": album.get("album") or "",
-                    "folder": album.get("folder") or "",
-                    "path": track.get("path") or "",
+                    "folder": album.get("display_folder") or album.get("folder") or "",
+                    "path": track.get("display_path") or track.get("path") or "",
                     "sample_rate": track.get("sample_rate") or "",
                     "resample_ratio": track.get("resample_ratio") or "",
                     "bits_per_sample": track.get("bits_per_sample") or "",
@@ -344,7 +344,7 @@ def render_job_txt(report: dict[str, Any]) -> str:
     lines.extend(["", "Files:"])
     for item in report["files"]:
         lines.append(
-            f"[{item['status']}] {item.get('albumartist') or ''} / {item.get('album') or ''} / {item.get('path') or ''}"
+            f"[{item['status']}] {item.get('albumartist') or ''} / {item.get('album') or ''} / {item.get('display_path') or item.get('path') or ''}"
         )
         lines.append(
             "  "
@@ -425,7 +425,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "job_event_timeline": event_timeline,
                 "albumartist": item.get("albumartist") or "",
                 "album": item.get("album") or "",
-                "path": item.get("path") or "",
+                "path": item.get("display_path") or item.get("path") or "",
                 "source_rate": item.get("source_rate") or "",
                 "target_rate": item.get("target_rate") or "",
                 "source_bits": item.get("source_bits") or "",

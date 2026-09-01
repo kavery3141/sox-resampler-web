@@ -247,14 +247,14 @@ def filter_issues(issues: list[dict[str, Any]], severity: str | None = None) -> 
 def render_issues_txt(issues: list[dict[str, Any]], timezone: str) -> str:
     out = [f"SoX Resampler Web Metadata Issues ({timezone})", f"Issues: {len(issues)}", ""]
     for issue in issues:
-        folders = issue.get("folders") or ([issue.get("folder", "")] if issue.get("folder") else [])
+        folders = issue.get("display_folders") or issue.get("folders") or ([issue.get("display_folder") or issue.get("folder", "")] if (issue.get("display_folder") or issue.get("folder")) else [])
         out.extend([
             f"[{issue['severity'].upper()}] {issue['albumartist']} / {issue['album']}",
             f"Path{'s' if len(folders) != 1 else ''}: {' | '.join(folders)}",
             f"Issue: {issue['summary']}",
         ])
         for track in issue["affected_tracks"]:
-            track_path = track.get("path", "")
+            track_path = track.get("display_path") or track.get("path", "")
             suffix = f" [{track_path}]" if track_path else ""
             out.append(f"  {track['filename']}: {track['value']}{suffix}")
         out.append("")
@@ -270,8 +270,8 @@ def render_issues_csv(issues: list[dict[str, Any]]) -> str:
     for issue in issues:
         affected = issue["affected_tracks"] or [{"filename": "", "value": "", "path": ""}]
         for track in affected:
-            track_path = str(track.get("path", ""))
-            folder = str(Path(track_path).parent) if track_path else issue.get("folder", "")
+            track_path = str(track.get("display_path") or track.get("path", ""))
+            folder = str(Path(track_path).parent) if track_path else (issue.get("display_folder") or issue.get("folder", ""))
             writer.writerow([
                 issue["severity"], issue["issue_type"], issue["albumartist"], issue["album"],
                 folder, track_path, track.get("filename", ""), track.get("value", ""), issue["summary"],

@@ -14,6 +14,7 @@ services:
     environment:
       TZ: America/Indiana/Indianapolis
       MUSIC_ROOT: /music
+      HOST_MUSIC_ROOT: /mnt/MainStorage/StorageDataset/Music
       DATA_ROOT: /data
       ZFS_POOL: MainStorage
       DEFAULT_TARGET_RATE: "48000"

@@ -39,7 +39,7 @@ Interrupted replacement journals and orphan temp files are reconciled conservati
 
 The supplied `compose.truenas.yaml` currently follows the development image while the application is being built:
 
-- music dataset: `/mnt/MainStorage/StorageDataset/Music` -> `/music`
+- music dataset: `/mnt/MainStorage/StorageDataset/Music` -> `/music`; `HOST_MUSIC_ROOT` preserves the TrueNAS-visible path for UI copy actions and reports while internal conversion paths stay under `/music`
 - app dataset: `/mnt/MainStorage/StorageDataset/sox-resampler` -> `/data`
 - Web UI: port `30058`
 - timezone: `America/Indiana/Indianapolis`

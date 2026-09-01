@@ -129,7 +129,8 @@ function detailHtml(album){
   const channels=(album.channels||'').split(',').filter(Boolean).map(x=>`${x} ch`).join(', ')||'Unknown';
   const rg=(album.warnings||[]).includes('ReplayGain incomplete')?'Incomplete':'Complete';
   const relative=String(album.folder||'').replace(/^\/music\/?/,'');
-  return `<div class="albumDetailGrid"><span class="muted">ALBUMARTIST</span><span>${esc(album.albumartist||'Missing')}</span><span class="muted">ALBUM</span><span>${esc(album.album||'Missing')}</span><span class="muted">RELEASETYPE</span><span>${esc(release)}</span><span class="muted">MUSICBRAINZ_ALBUMID</span><span class="copyLine"><code>${esc(mbid)}</code><button class="copyMbid">Copy</button></span><span class="muted">ReplayGain</span><span>${esc(rg)}</span><span class="muted">Channels</span><span>${esc(channels)}</span><span class="muted">First seen</span><span>${esc(fmtTime(album.first_seen)||'Unknown')}</span><span class="muted">Folder</span><span class="copyLine"><code>${esc(album.folder||'')}</code><button class="copyPath">Copy Path</button></span><span class="muted">Relative path</span><span><code>${esc(relative)}</code></span></div>`;
+  const displayFolder=album.display_folder||album.folder||'';
+  return `<div class="albumDetailGrid"><span class="muted">ALBUMARTIST</span><span>${esc(album.albumartist||'Missing')}</span><span class="muted">ALBUM</span><span>${esc(album.album||'Missing')}</span><span class="muted">RELEASETYPE</span><span>${esc(release)}</span><span class="muted">MUSICBRAINZ_ALBUMID</span><span class="copyLine"><code>${esc(mbid)}</code><button class="copyMbid">Copy</button></span><span class="muted">ReplayGain</span><span>${esc(rg)}</span><span class="muted">Channels</span><span>${esc(channels)}</span><span class="muted">First seen</span><span>${esc(fmtTime(album.first_seen)||'Unknown')}</span><span class="muted">Folder</span><span class="copyLine"><code>${esc(displayFolder)}</code><button class="copyPath">Copy Path</button></span><span class="muted">Relative path</span><span><code>${esc(relative)}</code></span></div>`;
 }
 function toggleAlbumDetail(key,force=null){
   const open=force===null?!openAlbumDetails.has(key):Boolean(force);
@@ -146,7 +147,7 @@ function decorateRows(){
     const albumCell=row.children[1];
     const button=document.createElement('button');button.type='button';button.className='detailsBtn';button.dataset.key=encodeURIComponent(key);button.textContent=openAlbumDetails.has(key)?'Hide Details':'Details';button.onclick=event=>{event.stopPropagation();toggleAlbumDetail(key)};albumCell.appendChild(button);
     const detail=document.createElement('div');detail.className='albumDetail'+(openAlbumDetails.has(key)?'':' hidden');detail.dataset.key=encodeURIComponent(key);detail.innerHTML=detailHtml(album);row.after(detail);
-    detail.querySelector('.copyPath').onclick=()=>navigator.clipboard?.writeText(album.folder||'');
+    detail.querySelector('.copyPath').onclick=()=>navigator.clipboard?.writeText(album.display_folder||album.folder||'');
     detail.querySelector('.copyMbid').onclick=()=>navigator.clipboard?.writeText((album.mbids||'').split(',').filter(Boolean).join(', '));
     row.tabIndex=0;
     row.addEventListener('keydown',event=>{

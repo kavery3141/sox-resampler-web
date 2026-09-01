@@ -18,6 +18,12 @@ from .admin import build_admin_router
 from .converter import SOX_ULTRA_BIN, recover_pending_transactions
 from .health_status import summarize_health
 from .issues import build_metadata_issues, filter_issues, render_issues_csv, render_issues_txt
+from .path_display import (
+    decorate_album_paths,
+    decorate_issue_paths,
+    decorate_job_report_paths,
+    decorate_review_paths,
+)
 from .job_maintenance import (
     RetrySpecError,
     clipping_retry_spec,
@@ -56,6 +62,7 @@ from .update_check import build_update_router
 APP_VERSION = os.getenv("APP_VERSION", "0.7.0-dev")
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
+HOST_MUSIC_ROOT = Path(os.getenv("HOST_MUSIC_ROOT", str(MUSIC_ROOT)))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DB_PATH = DATA_ROOT / "sox-resampler.db"
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -254,7 +261,8 @@ def _review_resolved(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     review["source_pre_hash"] = bool(source_pre_hash)
-    return _apply_operational_review_checks(review, reserve)
+    review = _apply_operational_review_checks(review, reserve)
+    return decorate_review_paths(review, MUSIC_ROOT, HOST_MUSIC_ROOT)
 
 
 def _review(request: BatchReviewRequest) -> dict[str, Any]:
@@ -412,6 +420,7 @@ def health() -> dict[str, Any]:
         "db_schema": db.SCHEMA_VERSION,
         "music_root": {
             "path": str(MUSIC_ROOT),
+            "host_path": str(HOST_MUSIC_ROOT),
             "exists": music_exists,
             "readable": music_readable,
             "writable": music_writable,
@@ -439,6 +448,7 @@ def status() -> dict[str, Any]:
         "cpu_percent": psutil.cpu_percent(interval=0.1),
         "memory_percent": psutil.virtual_memory().percent,
         "music_root": str(MUSIC_ROOT),
+        "host_music_root": str(HOST_MUSIC_ROOT),
         "data_root": str(DATA_ROOT),
         "timezone": TIMEZONE,
         "default_target_rate": int(os.getenv("DEFAULT_TARGET_RATE", "48000")),
@@ -479,6 +489,8 @@ def candidates(
     if above is not None and not 0 <= above <= 768000:
         raise HTTPException(status_code=400, detail="Invalid above sample rate")
     albums = db.candidate_albums(DB_PATH, cleaned, above)
+    for album in albums:
+        decorate_album_paths(album, MUSIC_ROOT, HOST_MUSIC_ROOT)
     return {"rates": cleaned, "above": above, "count": len(albums), "albums": albums}
 
 
@@ -488,6 +500,7 @@ def metadata_issues(severity: str = Query(default="all")) -> dict[str, Any]:
         issues = filter_issues(build_metadata_issues(DB_PATH), severity)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    decorate_issue_paths(issues, MUSIC_ROOT, HOST_MUSIC_ROOT)
     counts = {"blocking": 0, "warning": 0, "info": 0}
     for issue in issues:
         counts[issue["severity"]] += 1
@@ -500,6 +513,7 @@ def metadata_issues_report_txt(severity: str = Query(default="all")) -> Response
         issues = filter_issues(build_metadata_issues(DB_PATH), severity)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    decorate_issue_paths(issues, MUSIC_ROOT, HOST_MUSIC_ROOT)
     return _attachment(
         render_issues_txt(issues, TIMEZONE),
         "text/plain; charset=utf-8",
@@ -513,6 +527,7 @@ def metadata_issues_report_csv(severity: str = Query(default="all")) -> Response
         issues = filter_issues(build_metadata_issues(DB_PATH), severity)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    decorate_issue_paths(issues, MUSIC_ROOT, HOST_MUSIC_ROOT)
     return _attachment(
         render_issues_csv(issues),
         "text/csv; charset=utf-8",
@@ -691,6 +706,7 @@ def conversion_report_txt(job_id: int) -> Response:
     report = load_job_report(DB_PATH, job_id, TIMEZONE)
     if not report:
         raise HTTPException(status_code=404, detail="Job not found")
+    decorate_job_report_paths(report, MUSIC_ROOT, HOST_MUSIC_ROOT)
     return _attachment(
         render_job_txt(report),
         "text/plain; charset=utf-8",
@@ -703,6 +719,7 @@ def conversion_report_csv(job_id: int) -> Response:
     report = load_job_report(DB_PATH, job_id, TIMEZONE)
     if not report:
         raise HTTPException(status_code=404, detail="Job not found")
+    decorate_job_report_paths(report, MUSIC_ROOT, HOST_MUSIC_ROOT)
     return _attachment(
         render_job_csv(report),
         "text/csv; charset=utf-8",
