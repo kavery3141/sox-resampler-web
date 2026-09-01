@@ -32,6 +32,16 @@ class SourceIdentity:
     mtime_ns: int
 
 
+@dataclass(frozen=True)
+class FilesystemMetadata:
+    mode: int
+    uid: int
+    gid: int
+    atime_ns: int
+    mtime_ns: int
+    xattrs: tuple[tuple[str, bytes], ...]
+
+
 @dataclass
 class ConversionResult:
     source: str
@@ -62,6 +72,94 @@ SOX_ULTRA_BIN = os.getenv("SOX_ULTRA_BIN", "/opt/sox-ultra/bin/sox")
 def source_identity(path: Path) -> SourceIdentity:
     st = path.stat()
     return SourceIdentity(st.st_ino, st.st_dev, st.st_size, st.st_mtime_ns)
+
+
+def filesystem_metadata(path: Path) -> FilesystemMetadata:
+    st = path.stat(follow_symlinks=False)
+    try:
+        names = sorted(os.listxattr(path, follow_symlinks=False))
+    except OSError as exc:
+        raise ConversionError(f"Cannot read extended-attribute list for {path}") from exc
+    values: list[tuple[str, bytes]] = []
+    for name in names:
+        try:
+            values.append((name, os.getxattr(path, name, follow_symlinks=False)))
+        except OSError as exc:
+            raise ConversionError(f"Cannot read extended attribute {name!r} from {path}") from exc
+    return FilesystemMetadata(
+        mode=stat.S_IMODE(st.st_mode),
+        uid=int(st.st_uid),
+        gid=int(st.st_gid),
+        atime_ns=int(st.st_atime_ns),
+        mtime_ns=int(st.st_mtime_ns),
+        xattrs=tuple(values),
+    )
+
+
+def _verify_filesystem_metadata(path: Path, expected: FilesystemMetadata, label: str) -> None:
+    actual = filesystem_metadata(path)
+    if actual.mode != expected.mode:
+        raise ConversionError(
+            f"{label} mode mismatch: expected {expected.mode:o}, got {actual.mode:o}"
+        )
+    if (actual.uid, actual.gid) != (expected.uid, expected.gid):
+        raise ConversionError(
+            f"{label} owner/group mismatch: expected {expected.uid}:{expected.gid}, "
+            f"got {actual.uid}:{actual.gid}"
+        )
+    if actual.mtime_ns != expected.mtime_ns:
+        raise ConversionError(f"{label} modification timestamp mismatch")
+    if actual.xattrs != expected.xattrs:
+        expected_names = [name for name, _ in expected.xattrs]
+        actual_names = [name for name, _ in actual.xattrs]
+        raise ConversionError(
+            f"{label} extended attributes differ: expected {expected_names}, got {actual_names}"
+        )
+
+
+def _apply_filesystem_metadata(target: Path, expected: FilesystemMetadata) -> None:
+    try:
+        os.chmod(target, expected.mode, follow_symlinks=False)
+    except OSError as exc:
+        raise ConversionError(f"Cannot preserve mode {expected.mode:o}") from exc
+
+    target_st = target.stat(follow_symlinks=False)
+    if (target_st.st_uid, target_st.st_gid) != (expected.uid, expected.gid):
+        try:
+            os.chown(target, expected.uid, expected.gid, follow_symlinks=False)
+        except OSError as exc:
+            raise ConversionError(
+                f"Cannot preserve owner/group {expected.uid}:{expected.gid}; refusing replacement"
+            ) from exc
+
+    expected_xattrs = dict(expected.xattrs)
+    try:
+        current_names = set(os.listxattr(target, follow_symlinks=False))
+    except OSError as exc:
+        raise ConversionError("Cannot inspect output extended attributes") from exc
+
+    for name in sorted(current_names - set(expected_xattrs)):
+        try:
+            os.removexattr(target, name, follow_symlinks=False)
+        except OSError as exc:
+            raise ConversionError(f"Cannot remove unexpected extended attribute {name!r}") from exc
+
+    for name, value in expected.xattrs:
+        try:
+            os.setxattr(target, name, value, follow_symlinks=False)
+        except OSError as exc:
+            raise ConversionError(f"Cannot preserve extended attribute {name!r}") from exc
+
+    try:
+        os.utime(
+            target,
+            ns=(expected.atime_ns, expected.mtime_ns),
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise ConversionError("Cannot preserve modification timestamp") from exc
+
+    _verify_filesystem_metadata(target, expected, "Generated output")
 
 
 def _sha256(path: Path) -> str:
@@ -132,31 +230,6 @@ def compare_user_metadata(source: Path, target: Path) -> None:
         raise ConversionError("Embedded picture blocks differ after metadata copy")
 
 
-def _copy_filesystem_metadata(source: Path, target: Path) -> None:
-    st = source.stat(follow_symlinks=False)
-    os.chmod(target, stat.S_IMODE(st.st_mode), follow_symlinks=False)
-    target_st = target.stat(follow_symlinks=False)
-    if (target_st.st_uid, target_st.st_gid) != (st.st_uid, st.st_gid):
-        try:
-            os.chown(target, st.st_uid, st.st_gid, follow_symlinks=False)
-        except PermissionError as exc:
-            raise ConversionError(
-                f"Cannot preserve owner/group {st.st_uid}:{st.st_gid}; refusing replacement"
-            ) from exc
-
-    try:
-        names = os.listxattr(source, follow_symlinks=False)
-    except OSError:
-        names = []
-    for name in names:
-        try:
-            value = os.getxattr(source, name, follow_symlinks=False)
-            os.setxattr(target, name, value, follow_symlinks=False)
-        except OSError as exc:
-            raise ConversionError(f"Cannot preserve extended attribute {name!r}") from exc
-    os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns), follow_symlinks=False)
-
-
 def _rename_exchange(path_a: Path, path_b: Path) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     fn = getattr(libc, "renameat2", None)
@@ -208,17 +281,34 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
         raise ProfileUnavailable(f"Ultra 37 SoX backend is missing: {sox_binary}")
 
     command = [
-        "nice", "-n", "10", "ionice", "-c", "2", "-n", "7",
-        sox_binary, str(source), "-C", str(profile.flac_compression),
-        "-b", str(target_bits), str(temp),
+        "nice",
+        "-n",
+        "10",
+        "ionice",
+        "-c",
+        "2",
+        "-n",
+        "7",
+        sox_binary,
+        str(source),
+        "-C",
+        str(profile.flac_compression),
+        "-b",
+        str(target_bits),
+        str(temp),
     ]
     if profile.headroom_db < 0:
         command += ["gain", str(profile.headroom_db)]
 
     if ultra37:
         command += [
-            "rate", "-d", "37", "-B", f"{profile.passband_percent:g}",
-            "-p", f"{profile.phase_percent:g}",
+            "rate",
+            "-d",
+            "37",
+            "-B",
+            f"{profile.passband_percent:g}",
+            "-p",
+            f"{profile.phase_percent:g}",
         ]
     else:
         command += ["rate"] + _stock_quality_args(profile)
@@ -265,13 +355,23 @@ def preview(source: Path, profile: ResampleProfile) -> dict[str, Any]:
 
 
 def _full_decode_test(path: Path) -> None:
-    result = subprocess.run(["flac", "-t", "--silent", str(path)], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        ["flac", "-t", "--silent", str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.returncode != 0:
         raise ConversionError(f"FLAC full decode verification failed: {(result.stderr or result.stdout).strip()}")
 
 
 def _peak(path: Path) -> float | None:
-    result = subprocess.run(["sox", str(path), "-n", "stat"], capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        ["sox", str(path), "-n", "stat"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     text = result.stderr or result.stdout
     match = re.search(r"Maximum amplitude:\s*([+-]?[0-9.]+)", text)
     return float(match.group(1)) if match else None
@@ -293,13 +393,19 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
     target_bits = src_bits if profile.bit_depth == "preserve" else int(profile.bit_depth)
     temp = source.with_name(f".{source.name}.sox-resampler.tmp.flac")
     identity = source_identity(source)
+    fs_metadata = filesystem_metadata(source)
     if temp.exists():
         raise ConversionError(f"Temporary file already exists: {temp}")
 
     command = build_sox_command(source, temp, profile, src_bits)
     result = ConversionResult(
-        source=str(source), status="running", command=command, source_rate=src_rate,
-        target_rate=profile.target_rate, source_bits=src_bits, target_bits=target_bits,
+        source=str(source),
+        status="running",
+        command=command,
+        source_rate=src_rate,
+        target_rate=profile.target_rate,
+        source_bits=src_bits,
+        target_bits=target_bits,
     )
     exchanged = False
     completed = False
@@ -331,11 +437,13 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
         peak = _peak(temp)
         if peak is not None and peak > 1.0:
             raise ConversionError(f"Output peak exceeds full scale: {peak:.9f}")
-        _copy_filesystem_metadata(source, temp)
+
+        _apply_filesystem_metadata(temp, fs_metadata)
         result.temp_sha256 = _sha256(temp)
 
         if source_identity(source) != identity:
             raise ConversionError("Source changed during conversion; refusing replacement")
+        _verify_filesystem_metadata(source, fs_metadata, "Source before replacement")
 
         journal.prepare(source, temp, identity, result.temp_sha256)
         journal_prepared = True
@@ -347,6 +455,7 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
         result.final_sha256 = _sha256(source)
         if result.final_sha256 != result.temp_sha256:
             raise ConversionError("Final checksum mismatch")
+        _verify_filesystem_metadata(source, fs_metadata, "Final replacement")
         journal.mark_verified()
 
         temp.unlink()
