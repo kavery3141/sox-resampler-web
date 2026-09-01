@@ -5,13 +5,14 @@ import unittest
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 from app import db
 from app.settings_extras import (
     DEFAULT_DAILY_SCAN_TIME,
     DEFAULT_RESERVE_BYTES,
+    DailyScanScheduleRequest,
+    ResetDefaultsRequest,
     build_settings_extras_router,
     configure_daily_scan_job,
     configured_daily_scan_time,
@@ -27,6 +28,13 @@ class _IdleScanner:
 class _IdleJobManager:
     def is_running(self) -> bool:
         return False
+
+
+def _route_endpoint(router, path: str, method: str):
+    for route in router.routes:
+        if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
+            return route.endpoint
+    raise AssertionError(f"Route not found: {method} {path}")
 
 
 class SettingsExtrasTests(unittest.TestCase):
@@ -54,7 +62,7 @@ class SettingsExtrasTests(unittest.TestCase):
                 if scheduler.running:
                     scheduler.shutdown(wait=False)
 
-    def test_schedule_api_persists_and_reset_preserves_exclusions(self) -> None:
+    def test_schedule_routes_persist_and_reset_preserves_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "settings.db"
             db.init(db_path)
@@ -64,34 +72,29 @@ class SettingsExtrasTests(unittest.TestCase):
             db.set_setting(db_path, "read_only_mode", True)
 
             scheduler = BackgroundScheduler(timezone="America/Indiana/Indianapolis")
-            app = FastAPI()
-            app.include_router(
-                build_settings_extras_router(
-                    db_path=db_path,
-                    timezone="America/Indiana/Indianapolis",
-                    scheduler=scheduler,
-                    daily_scan=lambda: None,
-                    scanner=_IdleScanner(),
-                    job_manager=_IdleJobManager(),
-                )
+            router = build_settings_extras_router(
+                db_path=db_path,
+                timezone="America/Indiana/Indianapolis",
+                scheduler=scheduler,
+                daily_scan=lambda: None,
+                scanner=_IdleScanner(),
+                job_manager=_IdleJobManager(),
             )
-            client = TestClient(app)
+            set_schedule = _route_endpoint(router, "/api/settings/schedule", "POST")
+            reset_defaults = _route_endpoint(router, "/api/settings/reset-defaults", "POST")
             try:
-                response = client.post("/api/settings/schedule", json={"daily_scan_time": "06:30"})
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json()["daily_scan_time"], "06:30")
+                response = set_schedule(DailyScanScheduleRequest(daily_scan_time="06:30"))
+                self.assertEqual(response["daily_scan_time"], "06:30")
                 self.assertEqual(configured_daily_scan_time(db_path), ("06:30", 6, 30))
 
-                blocked = client.post("/api/settings/reset-defaults", json={"confirmed": True})
-                self.assertEqual(blocked.status_code, 400)
-                self.assertIn("Read-only", blocked.json()["detail"])
+                with self.assertRaises(HTTPException) as blocked:
+                    reset_defaults(ResetDefaultsRequest(confirmed=True))
+                self.assertEqual(blocked.exception.status_code, 400)
+                self.assertIn("Read-only", str(blocked.exception.detail))
 
-                reset = client.post(
-                    "/api/settings/reset-defaults",
-                    json={"confirmed": True, "confirmed_disable_read_only": True},
+                body = reset_defaults(
+                    ResetDefaultsRequest(confirmed=True, confirmed_disable_read_only=True)
                 )
-                self.assertEqual(reset.status_code, 200)
-                body = reset.json()
                 self.assertEqual(body["daily_scan_time"], DEFAULT_DAILY_SCAN_TIME)
                 self.assertEqual(body["free_space_reserve_bytes"], DEFAULT_RESERVE_BYTES)
                 self.assertFalse(body["read_only_mode"])
