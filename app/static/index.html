@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SoX Resampler Web</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/ui.css">
 </head>
 <body>
 <header>
   <div class="brand"><img src="/static/icon.png" alt="SoX Resampler Web"><div><strong>SoX Resampler Web</strong><small>TrueNAS-local FLAC resampling</small></div></div>
   <nav>
-    <button id="navLibrary" class="active">Library</button>
+    <button id="navHome" class="active">Home</button>
+    <button id="navLibrary">Library</button>
     <button id="navConvert">Convert</button>
     <button id="navHistory">History</button>
     <button id="navSettings">Settings</button>
@@ -19,7 +21,34 @@
 </header>
 <div id="readOnlyBanner" class="banner"><svg class="icon" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>READ-ONLY MODE — Conversion is disabled</div>
 <main>
-  <section id="libraryView">
+  <section id="homeView">
+    <div class="homeHero">
+      <section class="card">
+        <div class="muted">Manual NAS-local resampling</div>
+        <h1 class="homeHeadline">High-rate FLACs, ready when you are.</h1>
+        <div class="muted">Scanning may run in the background. Audio conversion never starts until you select albums, review the batch, acknowledge in-place replacement, and press Start Conversion.</div>
+        <div class="homeActions"><button id="homeOpenCandidates" class="primary">Open High-Rate Candidates</button></div>
+      </section>
+      <section class="card">
+        <div class="homeStatusRow"><span class="muted">NAS storage</span><span class="spacer"></span><span id="homeNasState" class="statusPill">—</span></div>
+        <div class="homeStatusRow"><span class="muted">Read-only mode</span><span class="spacer"></span><span id="homeReadOnly" class="statusPill">—</span></div>
+        <div class="homeDetails" style="margin-top:16px"><span class="muted">Free space</span><strong id="homeFreeSpace">—</strong><span class="muted">Last scan</span><strong id="homeLastScan">—</strong></div>
+      </section>
+    </div>
+    <section class="summary">
+      <div class="card metric"><span>High-Rate Candidates</span><strong id="homeCandidateCount">—</strong></div>
+      <div class="card metric"><span>Blocked</span><strong id="homeBlockedCount">—</strong></div>
+      <div class="card metric"><span>Warnings</span><strong id="homeWarningCount">—</strong></div>
+      <div class="card metric"><span>Interrupted Jobs</span><strong id="homeInterruptedCount">—</strong></div>
+      <div class="card metric"><span>Default Target</span><strong>48 kHz</strong></div>
+    </section>
+    <div id="homeNotice" class="notice hidden"></div>
+    <section id="homeInterruptedCard" class="card homeInterrupted hidden">
+      <div class="sectionTitle"><div><strong id="homeInterruptedTitle">Interrupted job</strong><div id="homeInterruptedDetail" class="muted" style="margin-top:4px"></div></div><span class="spacer"></span><button id="homeResumeJob">View Job</button></div>
+    </section>
+  </section>
+
+  <section id="libraryView" class="hidden">
     <section class="summary">
       <div class="card metric"><span>Indexed FLACs</span><strong id="trackCount">—</strong></div>
       <div class="card metric"><span>Indexed Albums</span><strong id="albumCount">—</strong></div>
@@ -94,6 +123,14 @@
   <section id="settingsView" class="hidden">
     <div class="sectionTitle"><div><h2 style="margin-bottom:4px">Settings</h2><div class="muted">Persistent safety and storage preferences. Conversion remains manual regardless of these settings.</div></div></div>
     <section class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">Appearance</h3>
+      <div class="muted" style="margin-bottom:12px">Theme and density are remembered by this browser only, so remote and local administrators can use different preferences.</div>
+      <div class="appearanceGrid">
+        <label>Theme<select id="themeSelect"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+        <label>Layout density<select id="densitySelect"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+      </div>
+    </section>
+    <section class="card" style="margin-top:14px">
       <h3 style="margin-top:0">Read-only Scan Mode</h3>
       <div class="muted" style="margin-bottom:12px">When enabled, scanning and reporting remain available but conversion is disabled. This setting survives restarts.</div>
       <div class="toolbar"><button id="enableReadOnly">Enable Read-only Mode</button><button id="disableReadOnly" class="danger">Disable Read-only Mode</button><span id="readOnlyState" class="statusPill">—</span></div>
@@ -125,5 +162,6 @@
   <section id="tray" class="selectedTray hidden"><strong id="selectedCount">0 albums selected</strong><span id="selectedTracks" class="muted"></span><span id="selectedSize" class="muted"></span><span class="spacer"></span><button id="clearSelected">Clear Selection</button><button id="reviewBtn" class="primary">Review Batch</button></section>
 </main>
 <script src="/static/app.js"></script>
+<script src="/static/ui.js"></script>
 </body>
 </html>
