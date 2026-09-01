@@ -14,11 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db
+from .jobs import ConversionJobManager, JobError
 from .profiles import get_profile, list_profiles
 from .review import build_batch_review
 from .scanner import LibraryScanner
 
-APP_VERSION = "0.3.0-dev"
+APP_VERSION = "0.4.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
@@ -31,6 +32,7 @@ app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 scanner = LibraryScanner(MUSIC_ROOT, DB_PATH, TIMEZONE)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="library-scan")
 scheduler = BackgroundScheduler(timezone=TIMEZONE)
+job_manager = ConversionJobManager(DB_PATH, MUSIC_ROOT, TIMEZONE)
 
 
 class AlbumKey(BaseModel):
@@ -47,6 +49,14 @@ class BatchReviewRequest(BaseModel):
     workers: int = 1
 
 
+class BatchStartRequest(BatchReviewRequest):
+    acknowledged_replace_in_place: bool = False
+
+
+class WorkersRequest(BaseModel):
+    workers: int
+
+
 def _tool_version(command: list[str]) -> str | None:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
@@ -57,6 +67,8 @@ def _tool_version(command: list[str]) -> str | None:
 
 
 def _scan_async(mode: str) -> dict[str, Any]:
+    if job_manager.is_running():
+        raise HTTPException(status_code=409, detail="A conversion job is running; scans wait until it finishes or pauses")
     state = scanner.snapshot()
     if state["running"]:
         return state
@@ -66,8 +78,43 @@ def _scan_async(mode: str) -> dict[str, Any]:
 
 def _daily_scan() -> None:
     # Discovery only. Conversion is intentionally never launched by a schedule.
-    if not scanner.snapshot()["running"]:
+    if not scanner.snapshot()["running"] and not job_manager.is_running():
         executor.submit(scanner.run, "incremental")
+
+
+def _review(request: BatchReviewRequest) -> dict[str, Any]:
+    cleaned_rates = sorted({r for r in request.rates if 8000 <= r <= 768000})
+    if request.above is not None and not 0 <= request.above <= 768000:
+        raise HTTPException(status_code=400, detail="Invalid above sample rate")
+    try:
+        profile = get_profile(request.profile_id)
+        reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
+        review = build_batch_review(
+            DB_PATH, MUSIC_ROOT, [a.model_dump() for a in request.albums], cleaned_rates,
+            request.above, profile, request.workers, reserve,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    usage = psutil.disk_usage(str(MUSIC_ROOT)) if MUSIC_ROOT.exists() else None
+    free_bytes = usage.free if usage else 0
+    required = review["estimated_peak_temp_bytes"] + reserve
+    review["free_bytes"] = free_bytes
+    review["free_space_ok"] = free_bytes >= required
+    review["required_free_bytes"] = required
+    if not review["free_space_ok"]:
+        review["blockers"].append("Insufficient free space for temp output plus configured reserve")
+    if not os.access(MUSIC_ROOT, os.W_OK):
+        review["blockers"].append("Music dataset is not writable")
+    if scanner.snapshot()["running"]:
+        review["blockers"].append("A library scan is currently running")
+    if job_manager.is_running():
+        review["blockers"].append("Another conversion job is currently running")
+    if bool(db.get_setting(DB_PATH, "read_only_mode", False)):
+        review["blockers"].append("Read-only Scan Mode is enabled")
+    review["blockers"] = list(dict.fromkeys(review["blockers"]))
+    review["can_start"] = bool(review["can_start"] and not review["blockers"])
+    return review
 
 
 @app.on_event("startup")
@@ -141,9 +188,14 @@ def status() -> dict[str, Any]:
         "max_workers": int(os.getenv("MAX_WORKERS", "2")),
         "free_bytes": usage.free if usage else None,
         "free_space_reserve_bytes": reserve,
+        "read_only_mode": bool(db.get_setting(DB_PATH, "read_only_mode", False)),
         "library": db.library_summary(DB_PATH),
         "scan": scanner.snapshot(),
         "latest_scan": db.latest_scan(DB_PATH),
+        "conversion": {
+            "running": job_manager.is_running(),
+            "active_job_id": job_manager.active_job_id(),
+        },
     }
 
 
@@ -166,29 +218,89 @@ def candidates(
 
 @app.post("/api/convert/review")
 def review_batch(request: BatchReviewRequest) -> dict[str, Any]:
-    cleaned_rates = sorted({r for r in request.rates if 8000 <= r <= 768000})
-    if request.above is not None and not 0 <= request.above <= 768000:
-        raise HTTPException(status_code=400, detail="Invalid above sample rate")
-    try:
-        profile = get_profile(request.profile_id)
-        reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
-        review = build_batch_review(
-            DB_PATH, MUSIC_ROOT, [a.model_dump() for a in request.albums], cleaned_rates,
-            request.above, profile, request.workers, reserve,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _review(request)
 
-    usage = psutil.disk_usage(str(MUSIC_ROOT)) if MUSIC_ROOT.exists() else None
-    free_bytes = usage.free if usage else 0
-    required = review["estimated_peak_temp_bytes"] + reserve
-    review["free_bytes"] = free_bytes
-    review["free_space_ok"] = free_bytes >= required
-    review["required_free_bytes"] = required
-    if not review["free_space_ok"]:
-        review["blockers"].append("Insufficient free space for temp output plus configured reserve")
-    review["can_start"] = bool(review["can_start"] and review["free_space_ok"])
-    return review
+
+@app.post("/api/convert/start")
+def start_batch(request: BatchStartRequest) -> dict[str, Any]:
+    if not request.acknowledged_replace_in_place:
+        raise HTTPException(status_code=400, detail="In-place replacement acknowledgment is required")
+    review = _review(request)
+    if not review["can_start"]:
+        raise HTTPException(status_code=409, detail={"message": "Batch preflight failed", "blockers": review["blockers"]})
+    try:
+        job_id = job_manager.create_job(
+            review,
+            request.profile_id,
+            request.workers,
+            {"rates": request.rates, "above": request.above},
+        )
+        job_manager.start(job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/api/convert/jobs")
+def recent_jobs(limit: int = 50) -> dict[str, Any]:
+    return {"jobs": job_manager.recent_jobs(limit)}
+
+
+@app.get("/api/convert/jobs/{job_id}")
+def conversion_job(job_id: int) -> dict[str, Any]:
+    job = job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/convert/jobs/{job_id}/resume")
+def resume_job(job_id: int) -> dict[str, Any]:
+    if scanner.snapshot()["running"]:
+        raise HTTPException(status_code=409, detail="A library scan is running")
+    if bool(db.get_setting(DB_PATH, "read_only_mode", False)):
+        raise HTTPException(status_code=409, detail="Read-only Scan Mode is enabled")
+    try:
+        job_manager.start(job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.post("/api/convert/jobs/{job_id}/pause")
+def pause_job(job_id: int) -> dict[str, Any]:
+    try:
+        job_manager.request_pause(job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"job_id": job_id, "status": "pausing"}
+
+
+@app.post("/api/convert/jobs/{job_id}/stop-after-album")
+def stop_after_album(job_id: int) -> dict[str, Any]:
+    try:
+        job_manager.request_stop_after_album(job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"job_id": job_id, "status": "stopping"}
+
+
+@app.post("/api/convert/jobs/{job_id}/cancel")
+def cancel_job(job_id: int) -> dict[str, Any]:
+    try:
+        job_manager.request_cancel(job_id)
+    except JobError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"job_id": job_id, "status": "cancelling"}
+
+
+@app.post("/api/convert/jobs/{job_id}/workers")
+def change_workers(job_id: int, request: WorkersRequest) -> dict[str, Any]:
+    try:
+        job_manager.set_workers(job_id, request.workers)
+    except JobError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"job_id": job_id, "workers": request.workers, "takes_effect": "between active files"}
 
 
 @app.get("/api/scan/status")
