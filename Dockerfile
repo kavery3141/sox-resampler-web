@@ -19,12 +19,14 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-RUN python -m compileall -q app
+COPY tests ./tests
+RUN python -m compileall -q app tests
 
 RUN mkdir -p /data \
     && chown -R 568:568 /app /data
 
 USER 568:568
+RUN python -m unittest discover -s tests -v
 
 EXPOSE 8080
 
