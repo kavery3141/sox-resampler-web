@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,52 @@ def _physical_album_track_count(folder: Path, albumartist: str, album: str) -> i
         if (_first(audio, "albumartist") or "") == albumartist and (_first(audio, "album") or "") == album:
             count += 1
     return count
+
+
+def _ratio_label(source_rate: int, target_rate: int) -> str:
+    if source_rate <= 0 or target_rate <= 0:
+        return "unknown"
+    factor = source_rate / target_rate
+    if factor >= 1:
+        rounded = round(factor)
+        if math.isclose(factor, rounded, rel_tol=0, abs_tol=1e-9):
+            return f"{rounded}:1"
+        return f"{factor:.4f}:1"
+    inverse = target_rate / source_rate
+    rounded = round(inverse)
+    if math.isclose(inverse, rounded, rel_tol=0, abs_tol=1e-9):
+        return f"1:{rounded}"
+    return f"1:{inverse:.4f}"
+
+
+def _dither_label(profile: ResampleProfile) -> str:
+    if profile.dither in (None, "tpdf"):
+        return "TPDF"
+    if profile.dither == "shibata":
+        return "Shibata noise-shaped"
+    if profile.dither == "none":
+        return "disabled"
+    return str(profile.dither)
+
+
+def _technical_warnings(source_rate: int, source_bits: int, profile: ResampleProfile) -> list[str]:
+    warnings: list[str] = []
+    target_rate = int(profile.target_rate)
+    target_bits = source_bits if profile.bit_depth == "preserve" else int(profile.bit_depth)
+    if target_rate > source_rate > 0:
+        warnings.append(
+            f"Upsampling {source_rate / 1000:g} kHz to {target_rate / 1000:g} kHz"
+        )
+    if source_rate > 0 and source_rate % 44100 == 0 and target_rate % 48000 == 0:
+        warnings.append(
+            "44.1 kHz-family source to 48 kHz-family target uses a non-integer resampling ratio"
+        )
+    if target_bits < source_bits:
+        dither = _dither_label(profile)
+        warnings.append(
+            f"Bit-depth reduction {source_bits}-bit to {target_bits}-bit; dither: {dither}"
+        )
+    return warnings
 
 
 def build_batch_review(
@@ -110,6 +157,8 @@ def build_batch_review(
                     continue
                 matching += 1
                 source_size = int(item["size_bytes"])
+                source_bits = int(item.get("bits_per_sample") or 0)
+                target_bits = source_bits if profile.bit_depth == "preserve" else int(profile.bit_depth)
                 ratio = profile.target_rate / source_rate if source_rate else 1.0
                 estimated = max(1, int(source_size * ratio * 1.10))
                 source_path = Path(item["path"])
@@ -139,7 +188,7 @@ def build_batch_review(
                             track_blockers.append(
                                 f"Source sample rate changed since scan ({source_rate} -> {detail['sample_rate']}); rescan required"
                             )
-                        if int(detail["bits_per_sample"]) != int(item.get("bits_per_sample") or 0):
+                        if int(detail["bits_per_sample"]) != source_bits:
                             track_blockers.append("Source bit depth changed since scan; rescan required")
                         if int(detail["channels"]) != int(item.get("channels") or 0):
                             track_blockers.append("Source channel count changed since scan; rescan required")
@@ -175,13 +224,23 @@ def build_batch_review(
                 )
                 if not replaygain_complete and "ReplayGain incomplete" not in album_warnings:
                     album_warnings.append("ReplayGain incomplete")
+                for warning in _technical_warnings(source_rate, source_bits, profile):
+                    if warning not in album_warnings:
+                        album_warnings.append(warning)
 
+                dither_applied = None
+                if target_bits < source_bits:
+                    dither_applied = _dither_label(profile)
                 tracks.append(
                     {
                         "path": item["path"],
                         "filename": item["filename"],
                         "sample_rate": source_rate,
-                        "bits_per_sample": item["bits_per_sample"],
+                        "target_rate": profile.target_rate,
+                        "resample_ratio": _ratio_label(source_rate, profile.target_rate),
+                        "bits_per_sample": source_bits,
+                        "target_bits_per_sample": target_bits,
+                        "dither": dither_applied,
                         "channels": item["channels"],
                         "duration": item["duration"],
                         "source_bytes": source_size,
