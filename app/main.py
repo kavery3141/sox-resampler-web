@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .admin import build_admin_router
-from .converter import recover_pending_transactions
+from .converter import SOX_ULTRA_BIN, recover_pending_transactions
+from .health_status import summarize_health
 from .issues import build_metadata_issues, filter_issues, render_issues_csv, render_issues_txt
 from .job_maintenance import (
     RetrySpecError,
@@ -359,16 +360,30 @@ def health() -> dict[str, Any]:
     music_readable = os.access(MUSIC_ROOT, os.R_OK) if music_exists else False
     music_writable = os.access(MUSIC_ROOT, os.W_OK) if music_exists else False
     sox = _tool_version(["sox", "--version"])
+    ultra_sox = _tool_version([SOX_ULTRA_BIN, "--version"])
     flac = _tool_version(["flac", "--version"])
     zfs = zfs_pool_health()
+    read_only_mode = bool(db.get_setting(DB_PATH, "read_only_mode", False))
     try:
         db.init(DB_PATH)
         db_ok = True
     except Exception:
         db_ok = False
-    healthy = bool(music_exists and music_readable and data_writable and sox and flac and db_ok)
+    summary = summarize_health(
+        music_exists=music_exists,
+        music_readable=music_readable,
+        music_writable=music_writable,
+        data_exists=data_exists,
+        data_writable=data_writable,
+        db_ok=db_ok,
+        stock_sox=sox,
+        ultra_sox=ultra_sox,
+        flac=flac,
+        zfs=zfs,
+        read_only_mode=read_only_mode,
+    )
     return {
-        "status": "ok" if healthy else "degraded",
+        **summary,
         "app_version": APP_VERSION,
         "db_schema": db.SCHEMA_VERSION,
         "music_root": {
@@ -379,7 +394,7 @@ def health() -> dict[str, Any]:
         },
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
-        "tools": {"sox": sox, "flac": flac},
+        "tools": {"sox": sox, "sox_ultra_37": ultra_sox, "flac": flac},
         "zfs": zfs,
         "transaction_recovery": recovery_status,
     }
