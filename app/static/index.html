@@ -60,7 +60,9 @@
     <section class="card" style="margin-bottom:14px">
       <div class="toolbar">
         <input id="textSearch" class="search" type="search" placeholder="Filter by Album Artist or Album…" autocomplete="off">
+        <div class="ratebox"><input id="r882" type="checkbox"><label for="r882">88.2 kHz</label></div>
         <div class="ratebox"><input id="r96" type="checkbox" checked><label for="r96">96 kHz</label></div>
+        <div class="ratebox"><input id="r1764" type="checkbox"><label for="r1764">176.4 kHz</label></div>
         <div class="ratebox"><input id="r192" type="checkbox" checked><label for="r192">192 kHz</label></div>
         <div class="ratebox"><input id="above48" type="checkbox"><label for="above48">Any &gt; 48 kHz</label></div>
         <label>Metadata <select id="healthFilter"><option value="convertible">Clean + Warnings</option><option value="clean">Clean only</option><option value="warnings">Warnings only</option><option value="blocked">Blocked</option><option value="all">All</option></select></label>
@@ -166,5 +168,6 @@
 </main>
 <script src="/static/app.js"></script>
 <script src="/static/ui.js"></script>
+<script src="/static/source-rates.js"></script>
 </body>
 </html>
