@@ -9,10 +9,13 @@ from zoneinfo import ZoneInfo
 
 from app import db
 from app.job_maintenance import (
+    RetrySpecError,
     clear_terminal_history,
+    clipping_retry_spec,
     failed_retry_spec,
     history_summary,
     prune_job_history,
+    retry_options,
 )
 from app.jobs import ensure_tables
 from app.profiles import FOOBAR_ULTRA_37
@@ -117,6 +120,46 @@ class JobMaintenanceTest(unittest.TestCase):
             "album": "Album",
             "folder": "/music/Artist/Album",
         }])
+
+    def test_clipping_retry_selects_only_clipping_failures_and_adds_one_db_by_default(self) -> None:
+        stamp = "2026-09-01T10:00:00-04:00"
+        job_id = self._job(created=stamp, finished=stamp, status="completed", error="failures")
+        clipping = "/music/Artist/Album/01.flac"
+        other = "/music/Artist/Album/02.flac"
+        self._track(clipping)
+        self._track(other)
+        self._file(job_id, clipping, "failed", "SoX reported clipping: rate clipped 12 samples", 0)
+        self._file(job_id, other, "failed", "FLAC full decode verification failed", 1)
+
+        spec = clipping_retry_spec(self.db_path, job_id)
+        self.assertEqual(spec["paths"], [clipping])
+        self.assertEqual(spec["original_headroom_db"], 0.0)
+        self.assertEqual(spec["headroom_db"], -1.0)
+        self.assertEqual(spec["profile"].headroom_db, -1.0)
+
+        options = retry_options(self.db_path, job_id)
+        self.assertEqual(options["failed_files"], 2)
+        self.assertEqual(options["clipping_failures"], 1)
+        self.assertTrue(options["retry_with_headroom_available"])
+        self.assertEqual(options["default_headroom_db"], -1.0)
+
+    def test_headroom_retry_requires_more_attenuation_than_original_snapshot(self) -> None:
+        stamp = "2026-09-01T10:00:00-04:00"
+        job_id = self._job(created=stamp, finished=stamp, status="completed", error="clipping")
+        path = "/music/Artist/Album/01.flac"
+        self._track(path)
+        self._file(job_id, path, "failed", "Output peak exceeds full scale: 1.000100000", 0)
+        with self.assertRaisesRegex(RetrySpecError, "must add attenuation"):
+            clipping_retry_spec(self.db_path, job_id, headroom_db=0.0)
+
+    def test_non_clipping_failures_are_not_eligible_for_headroom_retry(self) -> None:
+        stamp = "2026-09-01T10:00:00-04:00"
+        job_id = self._job(created=stamp, finished=stamp, status="completed", error="failure")
+        path = "/music/Artist/Album/01.flac"
+        self._track(path)
+        self._file(job_id, path, "failed", "Source changed during conversion", 0)
+        with self.assertRaisesRegex(RetrySpecError, "no clipping failures"):
+            clipping_retry_spec(self.db_path, job_id)
 
     def test_retention_prunes_old_clean_jobs_but_protects_failures_and_errors(self) -> None:
         tz = ZoneInfo("America/Indiana/Indianapolis")
