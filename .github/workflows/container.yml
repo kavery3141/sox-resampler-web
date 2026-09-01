@@ -23,16 +23,13 @@ jobs:
           node-version: '22'
 
       - name: Validate Web UI JavaScript
+        shell: bash
         run: |
-          node --check app/static/app.js
-          node --check app/static/ui.js
-          node --check app/static/issues-ui.js
-          node --check app/static/live-stats.js
-          node --check app/static/advanced-presets.js
-          node --check app/static/batch-editor.js
-          node --check app/static/retry-failed.js
-          node --check app/static/retry-headroom.js
-          node --check app/static/maintenance-history.js
+          set -euo pipefail
+          while IFS= read -r file; do
+            echo "Checking ${file}"
+            node --check "${file}"
+          done < <(find app/static -maxdepth 1 -type f -name '*.js' | sort)
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
