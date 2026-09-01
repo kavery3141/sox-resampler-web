@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db
+from .converter import recover_pending_transactions
 from .jobs import ConversionJobManager, JobError
 from .profiles import get_profile, list_profiles
 from .review import build_batch_review
@@ -33,6 +34,7 @@ scanner = LibraryScanner(MUSIC_ROOT, DB_PATH, TIMEZONE)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="library-scan")
 scheduler = BackgroundScheduler(timezone=TIMEZONE)
 job_manager = ConversionJobManager(DB_PATH, MUSIC_ROOT, TIMEZONE)
+recovery_status: list[dict[str, str]] = []
 
 
 class AlbumKey(BaseModel):
@@ -112,6 +114,8 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
         review["blockers"].append("Another conversion job is currently running")
     if bool(db.get_setting(DB_PATH, "read_only_mode", False)):
         review["blockers"].append("Read-only Scan Mode is enabled")
+    if any(item.get("action") in {"manual_attention"} or str(item.get("action", "")).startswith("recovery_error") for item in recovery_status):
+        review["blockers"].append("An interrupted file transaction needs manual attention before conversion")
     review["blockers"] = list(dict.fromkeys(review["blockers"]))
     review["can_start"] = bool(review["can_start"] and not review["blockers"])
     return review
@@ -119,7 +123,9 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
 
 @app.on_event("startup")
 def startup() -> None:
+    global recovery_status
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    recovery_status = recover_pending_transactions(DATA_ROOT)
     db.init(DB_PATH)
     if not scheduler.running:
         scheduler.add_job(
@@ -168,6 +174,7 @@ def health() -> dict[str, Any]:
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
         "tools": {"sox": sox, "flac": flac},
+        "transaction_recovery": recovery_status,
     }
 
 
@@ -192,6 +199,7 @@ def status() -> dict[str, Any]:
         "library": db.library_summary(DB_PATH),
         "scan": scanner.snapshot(),
         "latest_scan": db.latest_scan(DB_PATH),
+        "transaction_recovery": recovery_status,
         "conversion": {
             "running": job_manager.is_running(),
             "active_job_id": job_manager.active_job_id(),
@@ -260,6 +268,8 @@ def resume_job(job_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="A library scan is running")
     if bool(db.get_setting(DB_PATH, "read_only_mode", False)):
         raise HTTPException(status_code=409, detail="Read-only Scan Mode is enabled")
+    if any(item.get("action") == "manual_attention" or str(item.get("action", "")).startswith("recovery_error") for item in recovery_status):
+        raise HTTPException(status_code=409, detail="An interrupted file transaction needs manual attention")
     try:
         job_manager.start(job_id)
     except JobError as exc:
