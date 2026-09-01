@@ -34,9 +34,12 @@ RUN cd /build/source \
 
 FROM python:3.12-slim-bookworm
 
+ARG APP_VERSION=0.7.0-dev
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=America/Indiana/Indianapolis \
+    APP_VERSION=${APP_VERSION} \
     SOX_ULTRA_BIN=/opt/sox-ultra/bin/sox \
     ZFS_POOL=MainStorage
 
