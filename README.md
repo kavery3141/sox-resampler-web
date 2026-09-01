@@ -49,7 +49,7 @@ The supplied `compose.truenas.yaml` currently follows the development image whil
 - all Linux capabilities dropped and `no-new-privileges` enabled
 - no `/dev/zfs` device exposure; pool health uses the read-only OpenZFS kernel status interface when available
 
-The two intended writable locations are the explicit `/music` and `/data` dataset mounts. CI validates the supplied Compose definition before building the container.
+The two intended writable locations are the explicit `/music` and `/data` dataset mounts. CI validates the supplied Compose definition before building the container. Because replacement creates a new verified inode before the atomic exchange, selected source files whose UID/GID cannot be reproduced by the unprivileged runtime are blocked during preflight rather than being converted and silently changing ownership. Maintenance reports the runtime UID/GID to make dataset-permission diagnosis straightforward.
 
 Stable deployments will use pinned release tags rather than automatic updates. The Maintenance page can check published GitHub releases and report update availability, but the application never installs an update itself.
 

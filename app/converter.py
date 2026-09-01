@@ -71,6 +71,7 @@ PICTURE = 6
 
 AT_FDCWD = -100
 RENAME_EXCHANGE = 2
+CAP_CHOWN = 0
 SOX_ULTRA_BIN = os.getenv("SOX_ULTRA_BIN", "/opt/sox-ultra/bin/sox")
 
 
@@ -193,9 +194,77 @@ def flac_metadata_block_types(path: Path) -> list[int]:
     return result
 
 
+def _effective_linux_capabilities() -> int:
+    """Return Linux CapEff as a bitmask when available; fail closed to no capabilities."""
+    try:
+        for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
+            if line.startswith("CapEff:"):
+                return int(line.split(":", 1)[1].strip(), 16)
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def ownership_preservation_blockers_for_ids(
+    *,
+    source_uid: int,
+    source_gid: int,
+    parent_gid: int,
+    parent_setgid: bool,
+    runtime_uid: int,
+    runtime_gid: int,
+    runtime_groups: set[int],
+    can_chown: bool,
+) -> list[str]:
+    """Explain when a newly generated file cannot retain source ownership.
+
+    SoX creates a new inode owned by the runtime user. A setgid parent directory can supply the
+    source group without a later chown. Otherwise an unprivileged owner may only select one of its
+    own groups. The check is intentionally conservative because replacement must not silently alter
+    NAS ownership.
+    """
+    if runtime_uid == 0 or can_chown:
+        return []
+
+    blockers: list[str] = []
+    if source_uid != runtime_uid:
+        blockers.append(
+            f"Source owner UID {source_uid} differs from runtime UID {runtime_uid}; "
+            "exact ownership cannot be preserved by the unprivileged container"
+        )
+
+    created_gid = parent_gid if parent_setgid else runtime_gid
+    allowed_groups = {runtime_gid, *runtime_groups}
+    if source_gid != created_gid and source_gid not in allowed_groups:
+        blockers.append(
+            f"Source group GID {source_gid} cannot be assigned by runtime UID {runtime_uid}; "
+            f"runtime groups are {','.join(str(value) for value in sorted(allowed_groups)) or '<none>'}"
+        )
+    return blockers
+
+
+def ownership_preservation_blockers(path: Path) -> list[str]:
+    st = path.stat(follow_symlinks=False)
+    parent_st = path.parent.stat(follow_symlinks=False)
+    runtime_uid = os.geteuid()
+    runtime_gid = os.getegid()
+    runtime_groups = set(os.getgroups())
+    can_chown = bool(_effective_linux_capabilities() & (1 << CAP_CHOWN))
+    return ownership_preservation_blockers_for_ids(
+        source_uid=int(st.st_uid),
+        source_gid=int(st.st_gid),
+        parent_gid=int(parent_st.st_gid),
+        parent_setgid=bool(parent_st.st_mode & stat.S_ISGID),
+        runtime_uid=runtime_uid,
+        runtime_gid=runtime_gid,
+        runtime_groups=runtime_groups,
+        can_chown=can_chown,
+    )
+
+
 def preservation_blockers(path: Path) -> list[str]:
     blocks = flac_metadata_block_types(path)
-    blockers: list[str] = []
+    blockers = ownership_preservation_blockers(path)
     if APPLICATION in blocks:
         blockers.append("FLAC APPLICATION metadata block present; safe preservation support is not implemented yet")
     if CUESHEET in blocks:

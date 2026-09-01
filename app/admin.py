@@ -367,6 +367,11 @@ def build_admin_router(
             "data_root": str(data_root),
             "free_bytes": usage.free if usage else None,
             "timezone": timezone,
+            "runtime_identity": {
+                "uid": os.geteuid(),
+                "gid": os.getegid(),
+                "supplementary_gids": sorted(set(os.getgroups())),
+            },
             "zfs": zfs_pool_health(),
             "transaction_recovery": recovery,
             "recovery_summary": _recovery_summary(recovery),
