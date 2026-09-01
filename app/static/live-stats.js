@@ -117,7 +117,9 @@ function ensureLiveStatsPanel(){
       <div class="telemetryStat"><span>Estimated finish</span><strong id="jobFinishEstimate">—</strong></div>
       <div class="telemetryStat"><span>Wall time</span><strong id="jobWallTime">—</strong></div>
       <div class="telemetryStat"><span>File-active time</span><strong id="jobActiveTime">—</strong></div>
-      <div class="telemetryStat"><span>Paused / idle</span><strong id="jobPausedTime">—</strong></div>
+      <div class="telemetryStat"><span>Paused time</span><strong id="jobPausedTime">—</strong></div>
+      <div class="telemetryStat"><span>Interrupted time</span><strong id="jobInterruptedTime">—</strong></div>
+      <div class="telemetryStat"><span>Idle / between files</span><strong id="jobIdleTime">—</strong></div>
       <div class="telemetryStat"><span>NAS read</span><strong id="jobNasRead">—</strong></div>
       <div class="telemetryStat"><span>NAS write</span><strong id="jobNasWrite">—</strong></div>
       <div class="telemetryStat"><span>CPU / memory</span><strong id="jobCpuMemory">—</strong></div>
@@ -227,12 +229,15 @@ async function updateRuntimeMetrics(j){
     $('jobNasWrite').textContent=liveIoRate(writeRate);
     $('jobCpuMemory').textContent=`${Math.round(Number(data.cpu_percent||0))}% / ${Math.round(Number(data.memory_percent||0))}%`;
     $('jobActiveTime').textContent=liveSeconds(data.job_time?.active_seconds||0);
-    $('jobPausedTime').textContent=liveSeconds(data.job_time?.paused_or_idle_seconds||0);
+    $('jobPausedTime').textContent=liveSeconds(data.job_time?.paused_seconds||0);
+    $('jobInterruptedTime').textContent=liveSeconds(data.job_time?.interrupted_seconds||0);
+    $('jobIdleTime').textContent=liveSeconds(data.job_time?.idle_seconds||0);
     $('jobSafeRestart').textContent=data.safe_to_restart?'Safe':'Wait';
     $('jobSafeRestart').className=`statusPill ${data.safe_to_restart?'completed':'interrupted'}`;
     $('jobSafeRestart').title=data.safe_to_restart_reason||'';
   }catch(e){
     $('jobNasRead').textContent='—';$('jobNasWrite').textContent='—';$('jobCpuMemory').textContent='—';
+    $('jobActiveTime').textContent='—';$('jobPausedTime').textContent='—';$('jobInterruptedTime').textContent='—';$('jobIdleTime').textContent='—';
   }finally{
     liveRuntimeState.pending=false;
   }

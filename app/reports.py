@@ -8,6 +8,7 @@ from typing import Any
 
 from . import db
 from .job_events import load_job_events
+from .job_timing import job_runtime_times
 
 
 def _result_payload(raw: str | None) -> dict[str, Any]:
@@ -288,6 +289,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         "album_order": album_order,
         "job_error": job_data.get("error_text"),
         "events": events,
+        "timing": job_runtime_times(db_path, job_id),
         "totals": {
             "files": len(file_rows),
             "completed": completed,
@@ -312,6 +314,11 @@ def render_job_txt(report: dict[str, Any]) -> str:
         f"Created: {report.get('created_at') or ''}",
         f"Started: {report.get('started_at') or ''}",
         f"Finished: {report.get('finished_at') or ''}",
+        f"Wall time seconds: {(report.get('timing') or {}).get('wall_seconds', 0)}",
+        f"File-active seconds: {(report.get('timing') or {}).get('active_seconds', 0)}",
+        f"Paused seconds: {(report.get('timing') or {}).get('paused_seconds', 0)}",
+        f"Interrupted seconds: {(report.get('timing') or {}).get('interrupted_seconds', 0)}",
+        f"Idle/between-file seconds: {(report.get('timing') or {}).get('idle_seconds', 0)}",
         f"Preset: {profile.get('name') or report.get('profile_id') or ''}",
         f"Preset ID: {report.get('profile_id') or ''}",
         f"Target sample rate: {profile.get('target_rate') or ''}",
@@ -384,6 +391,11 @@ def render_job_csv(report: dict[str, Any]) -> str:
         "flac_compression",
         "final_concurrency",
         "source_pre_hash",
+        "job_wall_seconds",
+        "job_active_seconds",
+        "job_paused_seconds",
+        "job_interrupted_seconds",
+        "job_idle_seconds",
         "job_event_timeline",
         "albumartist",
         "album",
@@ -422,6 +434,11 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
                 "final_concurrency": report.get("workers") or "",
                 "source_pre_hash": bool((report.get("operational") or {}).get("source_pre_hash")),
+                "job_wall_seconds": (report.get("timing") or {}).get("wall_seconds", 0),
+                "job_active_seconds": (report.get("timing") or {}).get("active_seconds", 0),
+                "job_paused_seconds": (report.get("timing") or {}).get("paused_seconds", 0),
+                "job_interrupted_seconds": (report.get("timing") or {}).get("interrupted_seconds", 0),
+                "job_idle_seconds": (report.get("timing") or {}).get("idle_seconds", 0),
                 "job_event_timeline": event_timeline,
                 "albumartist": item.get("albumartist") or "",
                 "album": item.get("album") or "",

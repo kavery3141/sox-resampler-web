@@ -17,6 +17,7 @@ from . import db
 from .converter import SOX_ULTRA_BIN, recover_pending_transactions
 from .force_stop import request_abort
 from .job_maintenance import clear_terminal_history, history_summary
+from .job_timing import job_runtime_times
 from .operations_log import log_disk_usage, recent_events, record_event
 from .storage_health import zfs_pool_health
 from .temp_cleanup import cleanup_orphan_temps
@@ -126,15 +127,6 @@ def _preview_exclusions(music_root: Path, exact: list[str], globs: list[str]) ->
     return {"folders": folder_count, "flac_files": flac_count}
 
 
-def _timestamp(value: str | None) -> float | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-
 def _recovery_summary(outcomes: list[dict[str, Any]]) -> dict[str, int | bool]:
     manual_attention = sum(1 for item in outcomes if item.get("action") == "manual_attention")
     errors = sum(
@@ -152,72 +144,7 @@ def _recovery_summary(outcomes: list[dict[str, Any]]) -> dict[str, int | bool]:
 
 
 def _job_runtime_times(db_path: Path, job_id: int) -> dict[str, float | int | str | None]:
-    now = datetime.now().astimezone().timestamp()
-    terminal = {"completed", "cancelled", "stopped"}
-    with db.session(db_path) as conn:
-        job = conn.execute(
-            "SELECT status,started_at,finished_at FROM conversion_jobs WHERE id=?",
-            (job_id,),
-        ).fetchone()
-        if not job:
-            return {
-                "status": None,
-                "wall_seconds": 0.0,
-                "active_seconds": 0.0,
-                "paused_or_idle_seconds": 0.0,
-                "active_files": 0,
-            }
-        rows = conn.execute(
-            "SELECT status,started_at,finished_at FROM conversion_files "
-            "WHERE job_id=? AND started_at IS NOT NULL",
-            (job_id,),
-        ).fetchall()
-
-    start = _timestamp(job["started_at"])
-    if start is None:
-        return {
-            "status": str(job["status"]),
-            "wall_seconds": 0.0,
-            "active_seconds": 0.0,
-            "paused_or_idle_seconds": 0.0,
-            "active_files": 0,
-        }
-    end = _timestamp(job["finished_at"]) if str(job["status"]) in terminal else now
-    end = max(start, end if end is not None else now)
-
-    intervals: list[tuple[float, float]] = []
-    active_files = 0
-    for row in rows:
-        row_start = _timestamp(row["started_at"])
-        if row_start is None:
-            continue
-        row_end = _timestamp(row["finished_at"])
-        if row_end is None and str(row["status"]) == "running":
-            row_end = now
-            active_files += 1
-        if row_end is None:
-            continue
-        a = max(start, row_start)
-        b = min(end, max(row_start, row_end))
-        if b > a:
-            intervals.append((a, b))
-
-    intervals.sort()
-    merged: list[list[float]] = []
-    for a, b in intervals:
-        if not merged or a > merged[-1][1]:
-            merged.append([a, b])
-        else:
-            merged[-1][1] = max(merged[-1][1], b)
-    active_seconds = sum(b - a for a, b in merged)
-    wall_seconds = max(0.0, end - start)
-    return {
-        "status": str(job["status"]),
-        "wall_seconds": round(wall_seconds, 3),
-        "active_seconds": round(active_seconds, 3),
-        "paused_or_idle_seconds": round(max(0.0, wall_seconds - active_seconds), 3),
-        "active_files": active_files,
-    }
+    return job_runtime_times(db_path, job_id)
 
 
 def build_admin_router(
