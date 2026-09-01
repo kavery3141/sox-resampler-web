@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - tools/one_shot_source_prehash.py
+      - tools/source_prehash_trigger.txt
 
 permissions:
   contents: write
