@@ -1,0 +1,30 @@
+name: One-shot album metadata patch
+
+on:
+  push:
+    paths:
+      - tools/one_shot_album_metadata_patch.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply album-wide metadata patch
+        run: python tools/one_shot_album_metadata_patch.py
+      - name: Commit patched application
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/db.py app/review.py app/issues.py app/static/issues-ui.js tests/test_candidate_albums.py tests/test_review_revalidation.py tests/test_issues.py
+          git commit -m "Enforce album-wide critical metadata consistency"
+          git push
