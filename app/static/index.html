@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SoX Resampler Web</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #0d1420; color: #f5f7fa; }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 20px; }
+    header { display: flex; align-items: center; gap: 18px; margin-bottom: 32px; }
+    .logo { width: 72px; height: 72px; border-radius: 16px; object-fit: cover; }
+    .card { background: #151f2e; border: 1px solid #2a3647; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+    .muted { color: #aeb8c6; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 14px; }
+    .value { font-size: 1.35rem; font-weight: 700; margin-top: 6px; }
+    .pill { display: inline-block; border: 1px solid #3d4a5c; border-radius: 999px; padding: 6px 10px; margin-right: 8px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <img class="logo" src="/static/icon.png" alt="SoX Resampler Web icon">
+    <div>
+      <h1>SoX Resampler Web</h1>
+      <div class="muted">TrueNAS-local FLAC resampling</div>
+    </div>
+  </header>
+
+  <section class="card">
+    <h2>Initial build</h2>
+    <p>The application shell and health service are running. Library indexing, album selection, conversion, verification, history, settings, and maintenance workflows are being implemented against the project specification.</p>
+    <span class="pill">96 / 192 kHz discovery</span>
+    <span class="pill">48 kHz default target</span>
+    <span class="pill">Preserve bit depth</span>
+  </section>
+
+  <section class="card">
+    <h2>Runtime status</h2>
+    <div id="status" class="grid"><div class="muted">Loading…</div></div>
+  </section>
+</main>
+<script>
+(async () => {
+  const el = document.getElementById('status');
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    const rows = [
+      ['App version', s.app_version],
+      ['CPU', s.cpu_percent + '%'],
+      ['Memory', s.memory_percent + '%'],
+      ['Target rate', s.default_target_rate + ' Hz'],
+      ['FLAC compression', 'Level ' + s.default_flac_compression],
+      ['Workers', s.default_workers + ' (max ' + s.max_workers + ')'],
+      ['Timezone', s.timezone],
+      ['Music root', s.music_root]
+    ];
+    el.innerHTML = rows.map(([k,v]) => `<div><div class="muted">${k}</div><div class="value">${v}</div></div>`).join('');
+  } catch (e) {
+    el.textContent = 'Unable to load runtime status.';
+  }
+})();
+</script>
+</body>
+</html>
