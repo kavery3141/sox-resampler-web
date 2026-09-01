@@ -60,8 +60,6 @@ def build_batch_review(
                     continue
                 matching += 1
                 source_size = int(item["size_bytes"])
-                # FLAC ratio is content-dependent. Scale by PCM sample-rate ratio and add 10%
-                # conservatism for temporary-space planning; this is explicitly an estimate.
                 ratio = profile.target_rate / source_rate if source_rate else 1.0
                 estimated = max(1, int(source_size * ratio * 1.10))
                 source_path = Path(item["path"])
@@ -80,9 +78,8 @@ def build_batch_review(
                         profile_error = detail["profile_error"]
                     except Exception as exc:
                         track_blockers.append(f"Preflight failed: {exc}")
-                if not profile_available and profile_error:
-                    if profile_error not in album_blockers:
-                        album_blockers.append(profile_error)
+                if not profile_available and profile_error and profile_error not in album_blockers:
+                    album_blockers.append(profile_error)
                 if track_blockers:
                     album_blockers.extend(f"{item['filename']}: {message}" for message in track_blockers)
 
@@ -134,9 +131,8 @@ def build_batch_review(
             total_matching += matching
             hard_blockers.extend(f"{albumartist} / {album}: {x}" for x in album_blockers)
 
-    statvfs = music_root.stat().st_dev if music_root.exists() else None
-    del statvfs  # Path-level disk usage is supplied by the caller/status API; kept explicit here.
     simultaneous_temp = sum(sorted(all_output_estimates, reverse=True)[:workers])
+    profile_ready = profile.quality != "ultra-37" or profile.exact_foobar_match
 
     return {
         "profile": profile.to_dict(),
@@ -150,5 +146,5 @@ def build_batch_review(
         "estimated_peak_temp_bytes": simultaneous_temp,
         "reserve_bytes": reserve_bytes,
         "blockers": list(dict.fromkeys(hard_blockers)),
-        "can_start": not hard_blockers and bool(albums) and profile.exact_foobar_match,
+        "can_start": not hard_blockers and bool(albums) and profile_ready,
     }
