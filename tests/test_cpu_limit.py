@@ -15,8 +15,11 @@ class CpuLimitCommandTests(unittest.TestCase):
         command = ["nice", "-n", "10", "ionice", "-c", "2", "sox", "in.flac", "out.flac"]
         with patch("app.converter.shutil.which", return_value="/usr/bin/cpulimit"):
             wrapped = apply_cpu_limit(command, 55)
-        self.assertEqual(wrapped[:6], ["cpulimit", "-q", "-l", "55", "--", "nice"])
-        self.assertEqual(wrapped[5:], command)
+        self.assertEqual(
+            wrapped[:9],
+            ["cpulimit", "-q", "-f", "-s", "SIGTERM", "-l", "55", "--", "nice"],
+        )
+        self.assertEqual(wrapped[8:], command)
 
     def test_invalid_limit_is_rejected(self) -> None:
         with self.assertRaises(ConversionError):

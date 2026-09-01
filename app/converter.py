@@ -356,7 +356,10 @@ def apply_cpu_limit(command: list[str], cpu_limit_percent: int | None) -> list[s
         raise ProfileUnavailable(
             "A conversion CPU cap is configured but the cpulimit runtime is unavailable"
         )
-    return ["cpulimit", "-q", "-l", str(limit), "--", *command]
+    # Keep cpulimit in the foreground so the job manager waits for the launched SoX
+    # process. SIGTERM is forwarded to the child if the wrapper itself is stopped, which
+    # keeps Force Stop semantics reliable with the extra supervisor process.
+    return ["cpulimit", "-q", "-f", "-s", "SIGTERM", "-l", str(limit), "--", *command]
 
 
 def preview(
