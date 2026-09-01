@@ -16,6 +16,11 @@ class CandidateAlbumsTests(unittest.TestCase):
         rate: int,
         size: int,
         tracknumber: str,
+        folder: str = "/music/Test Artist/Test Album",
+        albumartist: str = "Test Artist",
+        album: str = "Test Album",
+        releasetype: str = "album",
+        mbid: str = "11111111-2222-3333-4444-555555555555",
     ) -> None:
         with db.session(db_path) as conn:
             conn.execute(
@@ -30,7 +35,7 @@ class CandidateAlbumsTests(unittest.TestCase):
                 (
                     path,
                     Path(path).name,
-                    "/music/Test Artist/Test Album",
+                    folder,
                     Path(path).name,
                     size,
                     1,
@@ -38,11 +43,11 @@ class CandidateAlbumsTests(unittest.TestCase):
                     24,
                     2,
                     1.0,
-                    "Test Artist",
-                    "Test Album",
-                    "album",
-                    "11111111-2222-3333-4444-555555555555",
-                    "Test Artist",
+                    albumartist,
+                    album,
+                    releasetype,
+                    mbid,
+                    albumartist,
                     f"Track {tracknumber}",
                     tracknumber,
                     "1",
@@ -83,6 +88,7 @@ class CandidateAlbumsTests(unittest.TestCase):
             self.assertEqual(album["untouched_tracks"], 1)
             self.assertEqual(album["matching_bytes"], 1000)
             self.assertEqual(album["source_rates"], [96000])
+            self.assertEqual(album["untouched_rates"], [48000])
             self.assertEqual(album["estimated_output_48k_bytes"], 550)
             self.assertEqual(album["estimated_savings_48k_bytes"], 450)
             self.assertTrue(album["selectable"])
@@ -110,6 +116,61 @@ class CandidateAlbumsTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["matching_tracks"], 2)
             self.assertEqual(rows[0]["source_rates"], [88200, 176400])
+            self.assertEqual(rows[0]["untouched_rates"], [])
+
+    def test_same_album_name_in_two_folders_stays_two_physical_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.db"
+            db.init(db_path)
+            for folder, suffix in (
+                ("/music/Test Artist/Test Album", "a"),
+                ("/music/Test Artist/Test Album Deluxe", "b"),
+            ):
+                self._insert_track(
+                    db_path,
+                    path=f"{folder}/01-{suffix}.flac",
+                    folder=folder,
+                    rate=96000,
+                    size=1000,
+                    tracknumber="1",
+                )
+
+            rows = db.candidate_albums(db_path, [96000], above=None)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(
+                {row["folder"] for row in rows},
+                {"/music/Test Artist/Test Album", "/music/Test Artist/Test Album Deluxe"},
+            )
+            self.assertTrue(all(row["matching_tracks"] == 1 for row in rows))
+
+    def test_inconsistent_critical_tag_in_folder_blocks_candidate_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.db"
+            db.init(db_path)
+            folder = "/music/Test Artist/Test Album"
+            self._insert_track(
+                db_path,
+                path=f"{folder}/01.flac",
+                folder=folder,
+                rate=96000,
+                size=1000,
+                tracknumber="1",
+                albumartist="Test Artist",
+            )
+            self._insert_track(
+                db_path,
+                path=f"{folder}/02.flac",
+                folder=folder,
+                rate=96000,
+                size=1000,
+                tracknumber="2",
+                albumartist="Wrong Artist",
+            )
+
+            rows = db.candidate_albums(db_path, [96000], above=None)
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(not row["selectable"] for row in rows))
+            self.assertTrue(all("ALBUMARTIST missing or inconsistent" in row["blockers"] for row in rows))
 
 
 if __name__ == "__main__":
