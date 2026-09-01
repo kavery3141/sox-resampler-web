@@ -140,4 +140,5 @@ if(typeof loadUiAddon==='function'){
   loadUiAddon('/static/mixed-rate-ui.js');
   loadUiAddon('/static/library-breadcrumbs.js');
   loadUiAddon('/static/settings-extras-ui.js');
+  loadUiAddon('/static/album-thumbnails.js');
 }
