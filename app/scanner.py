@@ -13,6 +13,7 @@ from mutagen.flac import FLAC
 
 from . import db as dbmod
 from .artwork import prune_album_artwork, refresh_album_artwork
+from .background_priority import apply_background_priority
 
 
 HIDDEN_DIRS = {".snapshots", ".snapshot", ".trash", ".recycle", "@recycle", "$recycle.bin"}
@@ -39,6 +40,7 @@ class ScanState:
     started_at: str | None = None
     finished_at: str | None = None
     last_error: str | None = None
+    background_priority: dict[str, Any] | None = None
 
 
 def recover_interrupted_scan_runs(db_path: Path, timezone: str) -> int:
@@ -145,6 +147,7 @@ class LibraryScanner:
                 started_at=self._now(),
             )
 
+        self._set_state(background_priority=apply_background_priority())
         dbmod.init(self.db_path)
         exact = dbmod.get_setting(self.db_path, "exclude_paths", []) or []
         globs = dbmod.get_setting(self.db_path, "exclude_globs", []) or []
