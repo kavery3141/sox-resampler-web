@@ -1,3 +1,5 @@
+const SOURCE_RATE_FILTER_KEY='sox-resampler-source-rate-filters';
+
 activeRates=function(){
   const rates=[];
   if($('r882')?.checked)rates.push(88200);
@@ -7,9 +9,32 @@ activeRates=function(){
   return rates;
 };
 
+function saveSourceRateFilters(){
+  localStorage.setItem(SOURCE_RATE_FILTER_KEY,JSON.stringify({
+    r882:Boolean($('r882')?.checked),
+    r96:Boolean($('r96')?.checked),
+    r1764:Boolean($('r1764')?.checked),
+    r192:Boolean($('r192')?.checked),
+    above48:Boolean($('above48')?.checked),
+  }));
+}
+function loadSourceRateFilters(){
+  let saved=null;
+  try{saved=JSON.parse(localStorage.getItem(SOURCE_RATE_FILTER_KEY)||'null')}catch(e){saved=null}
+  if(!saved||typeof saved!=='object')return false;
+  for(const id of ['r882','r96','r1764','r192','above48']){
+    if($(id)&&typeof saved[id]==='boolean')$(id).checked=saved[id];
+  }
+  return true;
+}
+
 for(const id of ['r882','r1764']){
   const input=$(id);
   if(input)input.addEventListener('change',()=>{resetAck();loadCandidates()});
+}
+for(const id of ['r882','r96','r1764','r192','above48']){
+  const input=$(id);
+  if(input)input.addEventListener('change',saveSourceRateFilters);
 }
 
 function installSelectionTrayEstimates(){
@@ -65,12 +90,15 @@ openHighRateCandidates=function(){
   $('healthFilter').value='convertible';
   $('recentFilter').value='all';
   saveLibraryFilters();
+  saveSourceRateFilters();
   resetAck();
   loadCandidates();
   showView('library');
 };
 
+const restoredSourceRateFilters=loadSourceRateFilters();
 installSelectionTrayEstimates();
 installSavingsSort();
 $('homeOpenCandidates').onclick=openHighRateCandidates;
 render();
+if(restoredSourceRateFilters)loadCandidates();
