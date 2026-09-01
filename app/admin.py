@@ -215,6 +215,16 @@ def build_admin_router(
     def event_time() -> str:
         return datetime.now(tz).isoformat(timespec="seconds")
 
+    def resumable_scan() -> dict[str, Any] | None:
+        latest = db.latest_scan(db_path)
+        if not latest:
+            return None
+        if latest.get("status") not in {"paused", "interrupted"}:
+            return None
+        if latest.get("mode") not in {"full", "full-resume"}:
+            return None
+        return latest
+
     @router.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         reserve = int(db.get_setting(db_path, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
@@ -292,7 +302,7 @@ def build_admin_router(
         active_files = int(job_times["active_files"] or 0)
         safe_to_restart = active_files == 0 and not recovery_blocked
         if recovery_blocked:
-            restart_reason = "An interrupted file transaction needs manual attention"
+            restart_reason = "An interrupted file transaction or orphan temp needs manual attention"
         elif active_files:
             restart_reason = "Wait for the current file conversion to finish"
         else:
@@ -331,6 +341,7 @@ def build_admin_router(
             "maintenance_events": recent_events(db_path, 25),
             "latest_scan": db.latest_scan(db_path),
             "scan": scanner.snapshot(),
+            "scan_resumable": resumable_scan(),
             "conversion_running": bool(job_manager.is_running()),
             "music_root": str(music_root),
             "data_root": str(data_root),
@@ -345,6 +356,37 @@ def build_admin_router(
                 "python": _tool_version(["python", "--version"]),
             },
         }
+
+    @router.post("/api/scan/pause")
+    def pause_full_scan() -> dict[str, Any]:
+        if not scanner.request_pause():
+            raise HTTPException(status_code=409, detail="Only an active full scan or index rebuild can be paused")
+        result = scanner.snapshot()
+        record_event(
+            db_path,
+            event_time(),
+            "scan_pause_requested",
+            {"scan_id": result.get("run_id"), "mode": result.get("mode")},
+        )
+        return result
+
+    @router.post("/api/scan/resume")
+    def resume_full_scan() -> dict[str, Any]:
+        if job_manager.is_running():
+            raise HTTPException(status_code=409, detail="A conversion job is running; scan resume waits until it finishes or pauses")
+        if scanner.snapshot()["running"]:
+            raise HTTPException(status_code=409, detail="A scan is already active")
+        previous = resumable_scan()
+        if not previous:
+            raise HTTPException(status_code=409, detail="There is no paused or interrupted full scan to resume")
+        result = scan_async("full-resume")
+        record_event(
+            db_path,
+            event_time(),
+            "scan_resume_requested",
+            {"resume_of_scan_id": previous.get("id"), "previous_status": previous.get("status")},
+        )
+        return {**result, "resume_of_scan_id": previous.get("id")}
 
     @router.post("/api/maintenance/vacuum")
     def vacuum_database() -> dict[str, Any]:
