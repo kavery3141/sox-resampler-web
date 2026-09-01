@@ -15,6 +15,7 @@ from . import db as dbmod
 
 
 HIDDEN_DIRS = {".snapshots", ".snapshot", ".trash", ".recycle", "@recycle", "$recycle.bin"}
+TEMP_SUFFIX = ".sox-resampler.tmp.flac"
 
 
 @dataclass
@@ -94,7 +95,12 @@ class LibraryScanner:
                     continue
 
                 for filename in files:
-                    if not filename.lower().endswith(".flac"):
+                    lower_name = filename.lower()
+                    # Hidden files and our own hidden conversion temp files are never library
+                    # content. This also keeps interrupted transaction files out of reports.
+                    if filename.startswith(".") or lower_name.endswith(TEMP_SUFFIX):
+                        continue
+                    if not lower_name.endswith(".flac"):
                         continue
                     path = root_path / filename
                     if path.is_symlink() or self._excluded(path, exact, globs):
