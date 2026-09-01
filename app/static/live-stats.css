@@ -1,0 +1,10 @@
+.jobTelemetry{margin-top:14px;padding-top:14px;border-top:1px solid var(--border)}
+.telemetryHeader{display:flex;align-items:center;gap:12px;margin-bottom:10px}.telemetryHeader .muted{margin-left:auto;font-size:12px}
+.telemetryGrid{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));gap:10px}
+.telemetryStat{background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;min-width:0}
+.telemetryStat span{display:block;color:var(--muted);font-size:12px;margin-bottom:5px}.telemetryStat strong{display:block;font-size:16px;overflow-wrap:anywhere}
+.liveCurrentMeta{margin-top:5px;font-size:12px}
+body[data-theme="light"] .telemetryStat{background:#f8fafc}
+body[data-density="compact"] .jobTelemetry{margin-top:10px;padding-top:10px}body[data-density="compact"] .telemetryStat{padding:7px 9px}
+@media(max-width:1200px){.telemetryGrid{grid-template-columns:repeat(4,minmax(120px,1fr))}}
+@media(max-width:760px){.telemetryGrid{grid-template-columns:repeat(2,minmax(120px,1fr))}.telemetryHeader{align-items:flex-start;flex-direction:column}.telemetryHeader .muted{margin-left:0}}
