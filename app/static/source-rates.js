@@ -143,4 +143,5 @@ if(typeof loadUiAddon==='function'){
   loadUiAddon('/static/resource-control.js');
   loadUiAddon('/static/album-thumbnails.js');
   loadUiAddon('/static/artwork-maintenance.js');
+  loadUiAddon('/static/readiness-ui.js');
 }
