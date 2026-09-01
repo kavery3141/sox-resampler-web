@@ -19,6 +19,7 @@ from .jobs import ConversionJobManager, JobError
 from .profiles import get_profile, list_profiles
 from .review import build_batch_review
 from .scanner import LibraryScanner
+from .storage_health import zfs_pool_health
 
 APP_VERSION = "0.4.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
@@ -116,6 +117,10 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
         review["blockers"].append("Read-only Scan Mode is enabled")
     if any(item.get("action") in {"manual_attention"} or str(item.get("action", "")).startswith("recovery_error") for item in recovery_status):
         review["blockers"].append("An interrupted file transaction needs manual attention before conversion")
+    zfs = zfs_pool_health()
+    review["zfs"] = zfs
+    if not zfs["ok"]:
+        review["blockers"].append(str(zfs["reason"]))
     review["blockers"] = list(dict.fromkeys(review["blockers"]))
     review["can_start"] = bool(review["can_start"] and not review["blockers"])
     return review
@@ -157,6 +162,7 @@ def health() -> dict[str, Any]:
     music_writable = os.access(MUSIC_ROOT, os.W_OK) if music_exists else False
     sox = _tool_version(["sox", "--version"])
     flac = _tool_version(["flac", "--version"])
+    zfs = zfs_pool_health()
     try:
         db.init(DB_PATH)
         db_ok = True
@@ -174,6 +180,7 @@ def health() -> dict[str, Any]:
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
         "tools": {"sox": sox, "flac": flac},
+        "zfs": zfs,
         "transaction_recovery": recovery_status,
     }
 
@@ -200,6 +207,7 @@ def status() -> dict[str, Any]:
         "scan": scanner.snapshot(),
         "latest_scan": db.latest_scan(DB_PATH),
         "transaction_recovery": recovery_status,
+        "zfs": zfs_pool_health(),
         "conversion": {
             "running": job_manager.is_running(),
             "active_job_id": job_manager.active_job_id(),
