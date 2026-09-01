@@ -363,12 +363,13 @@ def health() -> dict[str, Any]:
     ultra_sox = _tool_version([SOX_ULTRA_BIN, "--version"])
     flac = _tool_version(["flac", "--version"])
     zfs = zfs_pool_health()
-    read_only_mode = bool(db.get_setting(DB_PATH, "read_only_mode", False))
     try:
         db.init(DB_PATH)
         db_ok = True
+        read_only_mode = bool(db.get_setting(DB_PATH, "read_only_mode", False))
     except Exception:
         db_ok = False
+        read_only_mode = False
     summary = summarize_health(
         music_exists=music_exists,
         music_readable=music_readable,

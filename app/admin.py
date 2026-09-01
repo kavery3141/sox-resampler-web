@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
-from .converter import recover_pending_transactions
+from .converter import SOX_ULTRA_BIN, recover_pending_transactions
 from .force_stop import request_abort
 from .job_maintenance import clear_terminal_history, history_summary
 from .operations_log import log_disk_usage, recent_events, record_event
@@ -372,6 +372,7 @@ def build_admin_router(
             "recovery_summary": _recovery_summary(recovery),
             "tools": {
                 "sox": _tool_version(["sox", "--version"]),
+                "sox_ultra_37": _tool_version([SOX_ULTRA_BIN, "--version"]),
                 "flac": _tool_version(["flac", "--version"]),
                 "metaflac": _tool_version(["metaflac", "--version"]),
                 "python": _tool_version(["python", "--version"]),
