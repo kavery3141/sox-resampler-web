@@ -127,6 +127,23 @@ function ensureLiveStatsPanel(){
   stats.insertAdjacentElement('afterend',panel);
   return panel;
 }
+async function forceStopCurrentFile(jobId,file,button){
+  const name=basename(file.path||'current file');
+  const confirmed=confirm(`Force stop SoX for ${name}?\n\nThis is an emergency action. The generated temp will be discarded and the original will remain untouched. If the file has already entered the atomic replacement stage, the transaction will finish safely instead of interrupting the swap.`);
+  if(!confirmed)return;
+  button.disabled=true;button.textContent='Stop requested…';
+  try{
+    const response=await fetch(`/api/convert/jobs/${jobId}/force-stop`,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:Number(file.id)})
+    });
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.detail||'Unable to force stop this file');
+    button.textContent='Force stop requested';
+  }catch(error){
+    button.disabled=false;button.textContent='Force Stop This File';
+    alert(error.message);
+  }
+}
 function updateCurrentFileTelemetry(j){
   const files=j.current_files||[];
   const cards=[...document.querySelectorAll('#jobCurrentList .currentFile')];
@@ -138,6 +155,12 @@ function updateCurrentFileTelemetry(j){
     line.className='liveCurrentMeta muted';
     line.textContent=[elapsed===null?null:`Running ${liveSeconds(elapsed)}`,file.source_bytes?`${fmtBytes(file.source_bytes)} source`:null].filter(Boolean).join(' · ');
     card.appendChild(line);
+    const emergency=document.createElement('details');
+    emergency.className='forceStopControl';
+    emergency.innerHTML='<summary>Emergency file control</summary><div class="muted" style="margin:6px 0">Use only when the current conversion itself must be terminated immediately.</div><button type="button" class="danger forceStopFile">Force Stop This File</button>';
+    const button=emergency.querySelector('.forceStopFile');
+    button.onclick=()=>forceStopCurrentFile(Number(j.id),file,button);
+    card.appendChild(emergency);
   });
 }
 function ensureDeferredUi(){
