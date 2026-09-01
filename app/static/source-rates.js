@@ -1,4 +1,5 @@
 const SOURCE_RATE_FILTER_KEY='sox-resampler-source-rate-filters';
+let selectedWarningFocus=false;
 
 activeRates=function(){
   const rates=[];
@@ -42,8 +43,16 @@ function installSelectionTrayEstimates(){
   if(!tray)return;
   const spacer=tray.querySelector('.spacer');
   if(!$('selectedWarnings')){
-    const warnings=document.createElement('span');
-    warnings.id='selectedWarnings';warnings.className='muted';
+    const warnings=document.createElement('button');
+    warnings.type='button';warnings.id='selectedWarnings';warnings.className='traySummaryButton';
+    warnings.title='Show only selected albums that have warnings';
+    warnings.onclick=()=>{
+      if(warnings.disabled)return;
+      selectedWarningFocus=!selectedWarningFocus;
+      if(selectedWarningFocus)showView('library');
+      render();
+      updateTray();
+    };
     spacer?tray.insertBefore(warnings,spacer):tray.appendChild(warnings);
   }
   if(!$('selectedSavings')){
@@ -60,7 +69,14 @@ updateTray=function(){
   const albums=[...state.selected.values()];
   const warningAlbums=albums.filter(album=>(album.warnings||[]).length>0).length;
   const estimatedSavings=albums.reduce((total,album)=>total+Number(album.estimated_savings_48k_bytes||0),0);
-  $('selectedWarnings').textContent=`${warningAlbums} warning album${warningAlbums===1?'':'s'}`;
+  if(warningAlbums===0)selectedWarningFocus=false;
+  const warningButton=$('selectedWarnings');
+  warningButton.disabled=warningAlbums===0;
+  warningButton.classList.toggle('active',selectedWarningFocus);
+  warningButton.textContent=selectedWarningFocus
+    ?`${warningAlbums} selected warning album${warningAlbums===1?'':'s'} — showing`
+    :`${warningAlbums} warning album${warningAlbums===1?'':'s'}`;
+  warningButton.title=selectedWarningFocus?'Show normal Library results':'Show only selected albums that have warnings';
   $('selectedSavings').textContent=`${fmtBytes(estimatedSavings)} est. savings @ 48 kHz`;
 };
 
@@ -76,12 +92,21 @@ function installSavingsSort(){
 
 const sourceRateBaseFiltered=filtered;
 filtered=function(){
-  const rows=sourceRateBaseFiltered();
+  let rows=sourceRateBaseFiltered();
+  if(selectedWarningFocus){
+    const selectedKeys=new Set(
+      [...state.selected.values()]
+        .filter(album=>(album.warnings||[]).length>0)
+        .map(selectedKey)
+    );
+    rows=rows.filter(album=>selectedKeys.has(selectedKey(album)));
+  }
   if($('sortFilter')?.value!=='savings')return rows;
   return [...rows].sort((a,b)=>Number(b.estimated_savings_48k_bytes||0)-Number(a.estimated_savings_48k_bytes||0));
 };
 
 openHighRateCandidates=function(){
+  selectedWarningFocus=false;
   if($('r882'))$('r882').checked=false;
   $('r96').checked=true;
   if($('r1764'))$('r1764').checked=false;
@@ -95,6 +120,14 @@ openHighRateCandidates=function(){
   loadCandidates();
   showView('library');
 };
+
+(function installSourceRateStyles(){
+  if(document.querySelector('style[data-source-rate-ui]'))return;
+  const style=document.createElement('style');
+  style.dataset.sourceRateUi='1';
+  style.textContent='.traySummaryButton{padding:4px 8px;font-size:inherit;background:transparent;border:1px solid transparent;color:var(--muted);border-radius:7px}.traySummaryButton:hover:not(:disabled){border-color:var(--border);color:var(--text)}.traySummaryButton.active{border-color:var(--border);color:var(--text);background:var(--surface,transparent)}.traySummaryButton:disabled{opacity:.55;cursor:default}';
+  document.head.appendChild(style);
+})();
 
 const restoredSourceRateFilters=loadSourceRateFilters();
 installSelectionTrayEstimates();
