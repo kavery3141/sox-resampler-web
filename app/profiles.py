@@ -19,7 +19,7 @@ class ResampleProfile:
     dither: str | None = None
     headroom_db: float = 0.0
     read_only: bool = True
-    exact_foobar_match: bool = False
+    implementation_ready: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -42,10 +42,11 @@ FOOBAR_ULTRA_37 = ResampleProfile(
     id="foobar-ultra-37-48k",
     name="Foobar Ultra 37 - 48 kHz",
     description=(
-        "Reference profile for the user's foobar2000 SoX Resampler 0.8.9 settings: "
-        "48 kHz, Ultra 37 (~222 dB), 95% passband, linear phase, aliasing disabled. "
-        "The exact Ultra 37 filter implementation is still being integrated; the app will not "
-        "silently substitute stock SoX -v and call it equivalent."
+        "Closest technically accurate Linux implementation of the user's foobar2000 SoX Resampler "
+        "0.8.9 profile: 48 kHz, 37-bit rate-filter accuracy (~222.8 dB), 95% 0 dB passband, "
+        "50% linear phase, and aliasing disabled. It uses the same SoX rate engine with a guarded "
+        "double-precision extension beyond stock SoX's 33-bit CLI limit; it is not claimed to be "
+        "bit-for-bit identical to foobar's component wrapper/track-edge behavior."
     ),
     target_rate=48000,
     bit_depth="preserve",
@@ -54,7 +55,7 @@ FOOBAR_ULTRA_37 = ResampleProfile(
     phase_percent=50.0,
     allow_aliasing=False,
     flac_compression=4,
-    exact_foobar_match=False,
+    implementation_ready=True,
 )
 
 BUILTIN_PROFILES: dict[str, ResampleProfile] = {
