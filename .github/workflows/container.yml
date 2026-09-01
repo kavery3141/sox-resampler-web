@@ -31,6 +31,7 @@ jobs:
           node --check app/static/advanced-presets.js
           node --check app/static/batch-editor.js
           node --check app/static/retry-failed.js
+          node --check app/static/retry-headroom.js
           node --check app/static/maintenance-history.js
 
       - name: Set up Docker Buildx
