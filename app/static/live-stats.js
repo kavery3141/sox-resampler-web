@@ -1,6 +1,7 @@
 const LIVE_STATS_WINDOW_MS=30*60*1000;
 const LIVE_STATS_MAX_SAMPLES=40;
 const liveStatsState={jobId:null,lastStatus:null,samples:[]};
+const liveRuntimeState={jobId:null,lastFetch:0,pending:false,previous:null};
 
 (function installLiveStatsStyles(){
   if(document.querySelector('link[data-live-stats]'))return;
@@ -24,6 +25,10 @@ function liveSeconds(value){
 function liveRate(bytesPerSecond){
   const value=Number(bytesPerSecond);
   return Number.isFinite(value)&&value>0?`${fmtBytes(value)}/s`:'Learning…';
+}
+function liveIoRate(bytesPerSecond){
+  const value=Number(bytesPerSecond);
+  return Number.isFinite(value)&&value>=0?`${fmtBytes(value)}/s`:'—';
 }
 function liveFilesPerHour(value){
   const rate=Number(value);
@@ -73,9 +78,6 @@ function liveSample(j){
   liveStatsState.samples=liveStatsState.samples
     .filter(sample=>now-sample.time<=LIVE_STATS_WINDOW_MS)
     .slice(-LIVE_STATS_MAX_SAMPLES);
-  if(liveStatsState.samples.length===1&&last&&last.time!==liveStatsState.samples[0].time){
-    liveStatsState.samples.unshift(last);
-  }
 }
 function liveEstimate(){
   const samples=liveStatsState.samples;
@@ -104,16 +106,23 @@ function ensureLiveStatsPanel(){
   panel.id='jobTelemetry';
   panel.className='jobTelemetry';
   panel.innerHTML=`
-    <div class="telemetryHeader"><strong>Live throughput</strong><span id="jobTelemetryNote" class="muted">Updates as files finish</span></div>
+    <div class="telemetryHeader"><strong>Live conversion telemetry</strong><span id="jobTelemetryNote" class="muted">Updates as files finish</span></div>
     <div class="telemetryGrid">
       <div class="telemetryStat"><span>Source processed</span><strong id="jobSourceProcessed">—</strong></div>
       <div class="telemetryStat"><span>Source remaining</span><strong id="jobSourceRemaining">—</strong></div>
-      <div class="telemetryStat"><span>Throughput</span><strong id="jobThroughput">—</strong></div>
+      <div class="telemetryStat"><span>Conversion throughput</span><strong id="jobThroughput">—</strong></div>
       <div class="telemetryStat"><span>Completion rate</span><strong id="jobFilesPerHour">—</strong></div>
       <div class="telemetryStat"><span>ETA</span><strong id="jobEta">—</strong></div>
       <div class="telemetryStat"><span>Estimated finish</span><strong id="jobFinishEstimate">—</strong></div>
       <div class="telemetryStat"><span>Wall time</span><strong id="jobWallTime">—</strong></div>
-    </div>`;
+      <div class="telemetryStat"><span>File-active time</span><strong id="jobActiveTime">—</strong></div>
+      <div class="telemetryStat"><span>Paused / idle</span><strong id="jobPausedTime">—</strong></div>
+      <div class="telemetryStat"><span>NAS read</span><strong id="jobNasRead">—</strong></div>
+      <div class="telemetryStat"><span>NAS write</span><strong id="jobNasWrite">—</strong></div>
+      <div class="telemetryStat"><span>CPU / memory</span><strong id="jobCpuMemory">—</strong></div>
+      <div class="telemetryStat"><span>Safe to Restart</span><strong id="jobSafeRestart" class="statusPill">—</strong></div>
+    </div>
+    <div class="telemetryFootnote muted">NAS read/write counters are system-wide and may include activity from other TrueNAS apps.</div>`;
   stats.insertAdjacentElement('afterend',panel);
   return panel;
 }
@@ -130,6 +139,48 @@ function updateCurrentFileTelemetry(j){
     card.appendChild(line);
   });
 }
+function resetRuntimeSamples(jobId){
+  liveRuntimeState.jobId=Number(jobId);
+  liveRuntimeState.previous=null;
+  liveRuntimeState.lastFetch=0;
+}
+async function updateRuntimeMetrics(j){
+  const jobId=Number(j.id);
+  if(liveRuntimeState.jobId!==jobId)resetRuntimeSamples(jobId);
+  const now=Date.now();
+  if(liveRuntimeState.pending||now-liveRuntimeState.lastFetch<2500)return;
+  liveRuntimeState.pending=true;
+  liveRuntimeState.lastFetch=now;
+  try{
+    const response=await fetch(`/api/runtime/metrics?job_id=${jobId}`);
+    if(!response.ok)throw new Error('Runtime metrics unavailable');
+    const data=await response.json();
+    const sample={
+      time:Date.now(),
+      read:Number(data.disk_read_bytes_total),
+      write:Number(data.disk_write_bytes_total),
+    };
+    let readRate=null,writeRate=null;
+    const previous=liveRuntimeState.previous;
+    if(previous&&Number.isFinite(sample.read)&&Number.isFinite(sample.write)&&sample.read>=previous.read&&sample.write>=previous.write){
+      const seconds=(sample.time-previous.time)/1000;
+      if(seconds>0){readRate=(sample.read-previous.read)/seconds;writeRate=(sample.write-previous.write)/seconds}
+    }
+    liveRuntimeState.previous=sample;
+    $('jobNasRead').textContent=liveIoRate(readRate);
+    $('jobNasWrite').textContent=liveIoRate(writeRate);
+    $('jobCpuMemory').textContent=`${Math.round(Number(data.cpu_percent||0))}% / ${Math.round(Number(data.memory_percent||0))}%`;
+    $('jobActiveTime').textContent=liveSeconds(data.job_time?.active_seconds||0);
+    $('jobPausedTime').textContent=liveSeconds(data.job_time?.paused_or_idle_seconds||0);
+    $('jobSafeRestart').textContent=data.safe_to_restart?'Safe':'Wait';
+    $('jobSafeRestart').className=`statusPill ${data.safe_to_restart?'completed':'interrupted'}`;
+    $('jobSafeRestart').title=data.safe_to_restart_reason||'';
+  }catch(e){
+    $('jobNasRead').textContent='—';$('jobNasWrite').textContent='—';$('jobCpuMemory').textContent='—';
+  }finally{
+    liveRuntimeState.pending=false;
+  }
+}
 function updateLiveStats(j){
   const panel=ensureLiveStatsPanel();if(!panel)return;
   liveSample(j);
@@ -144,12 +195,13 @@ function updateLiveStats(j){
   $('jobThroughput').textContent=active?liveRate(estimate.bytesPerSecond):(j.status==='completed'?'Finished':'—');
   $('jobFilesPerHour').textContent=active?liveFilesPerHour(estimate.filesPerHour):'—';
   $('jobEta').textContent=j.status==='completed'?'Done':paused?'Paused':eta===null?'Learning…':liveSeconds(eta);
-  $('jobFinishEstimate').textContent=j.status==='completed'?(j.finished_at?fmtTime(j.finished_at):'Done'):paused?'Paused':eta===null?'Learning…':liveFinish(eta);
+  $('jobFinishEstimate').textContent=j.status==='completed'?(j.finished_at?fmtTime(j.finished_at):'Done'):paused?'Unavailable':eta===null?'Learning…':liveFinish(eta);
   const elapsed=liveElapsed(j);$('jobWallTime').textContent=elapsed===null?'—':liveSeconds(elapsed);
   $('jobTelemetryNote').textContent=active
     ?(estimate.bytesPerSecond?'Rolling estimate from completed files':'Learning after the next completed file')
-    :(paused?'Job is not consuming conversion time':'Final job statistics');
+    :(paused?'ETA is unavailable while paused':'Final job statistics');
   updateCurrentFileTelemetry(j);
+  updateRuntimeMetrics(j);
 }
 
 const baseRenderJobForLiveStats=renderJob;
