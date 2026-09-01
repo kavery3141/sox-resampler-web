@@ -141,6 +141,7 @@ app.include_router(
         job_manager=job_manager,
         scan_async=_scan_async,
         recovery_status=lambda: recovery_status,
+        host_music_root=HOST_MUSIC_ROOT,
     )
 )
 app.include_router(build_profiles_router(DB_PATH))

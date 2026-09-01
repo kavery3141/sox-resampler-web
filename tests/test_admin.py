@@ -26,6 +26,18 @@ class AdminSettingsTests(unittest.TestCase):
             self.assertEqual(exact, sorted([str(root / "Archive"), str(root / "Test")]))
             self.assertEqual(globs, ["*/Samples/*"])
 
+    def test_true_nas_exclusion_path_normalizes_to_internal_mount(self) -> None:
+        root = Path("/music")
+        host = Path("/mnt/MainStorage/StorageDataset/Music")
+        exact, globs = _normalize_exclusions(
+            root,
+            ["/mnt/MainStorage/StorageDataset/Music/Artist/Album"],
+            ["/mnt/MainStorage/StorageDataset/Music/Archive/*"],
+            host,
+        )
+        self.assertEqual(exact, ["/music/Artist/Album"])
+        self.assertEqual(globs, ["/music/Archive/*"])
+
     def test_exclusion_cannot_escape_music_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "music"

@@ -19,6 +19,7 @@ from .force_stop import request_abort
 from .job_maintenance import clear_terminal_history, history_summary
 from .job_timing import job_runtime_times
 from .operations_log import log_disk_usage, recent_events, record_event
+from .path_display import host_music_path, internal_music_path
 from .storage_health import zfs_pool_health
 from .temp_cleanup import cleanup_orphan_temps
 
@@ -58,31 +59,48 @@ def _tool_version(command: list[str]) -> str | None:
     return output.splitlines()[0] if output else None
 
 
-def _normalize_exclusions(music_root: Path, paths: list[str], globs: list[str]) -> tuple[list[str], list[str]]:
-    root = music_root.resolve()
+def _normalize_exclusions(
+    music_root: Path,
+    paths: list[str],
+    globs: list[str],
+    host_music_root: Path | None = None,
+) -> tuple[list[str], list[str]]:
+    root = music_root.resolve(strict=False)
+    host_root = (host_music_root or music_root).resolve(strict=False)
     normalized_paths: list[str] = []
     for raw in paths:
         text = str(raw).strip()
         if not text:
             continue
-        candidate = Path(text)
-        if not candidate.is_absolute():
-            candidate = root / candidate
-        resolved = candidate.resolve(strict=False)
+        resolved = Path(internal_music_path(text, root, host_root)).resolve(strict=False)
         if resolved != root and root not in resolved.parents:
             raise ValueError(f"Excluded path must be inside the music root: {text}")
         normalized_paths.append(str(resolved))
 
     normalized_globs: list[str] = []
+    host_prefix = host_root.as_posix().rstrip("/")
+    internal_prefix = root.as_posix().rstrip("/")
     for raw in globs:
         pattern = str(raw).strip().replace("\\", "/")
         if not pattern:
             continue
         if "\x00" in pattern:
             raise ValueError("Exclusion glob contains an invalid NUL character")
+        if pattern == host_prefix or pattern.startswith(host_prefix + "/"):
+            pattern = internal_prefix + pattern[len(host_prefix):]
         normalized_globs.append(pattern)
 
     return sorted(set(normalized_paths)), sorted(set(normalized_globs))
+
+
+def _display_exclusion_glob(
+    pattern: str, music_root: Path, host_music_root: Path
+) -> str:
+    internal_prefix = music_root.resolve(strict=False).as_posix().rstrip("/")
+    host_prefix = host_music_root.resolve(strict=False).as_posix().rstrip("/")
+    if pattern == internal_prefix or pattern.startswith(internal_prefix + "/"):
+        return host_prefix + pattern[len(internal_prefix):]
+    return pattern
 
 
 def _excluded(path: Path, music_root: Path, exact: set[str], globs: list[str]) -> bool:
@@ -158,9 +176,11 @@ def build_admin_router(
     job_manager: Any,
     scan_async: Callable[[str], dict[str, Any]],
     recovery_status: Callable[[], list[dict[str, Any]]],
+    host_music_root: Path | None = None,
 ) -> APIRouter:
     router = APIRouter()
     tz = ZoneInfo(timezone)
+    host_root = (host_music_root or music_root).resolve(strict=False)
 
     def event_time() -> str:
         return datetime.now(tz).isoformat(timespec="seconds")
@@ -178,13 +198,16 @@ def build_admin_router(
     @router.get("/api/settings")
     def get_settings() -> dict[str, Any]:
         reserve = int(db.get_setting(db_path, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
+        stored_paths = db.get_setting(db_path, "exclude_paths", []) or []
+        stored_globs = db.get_setting(db_path, "exclude_globs", []) or []
         return {
             "read_only_mode": bool(db.get_setting(db_path, "read_only_mode", False)),
             "free_space_reserve_bytes": reserve,
             "free_space_reserve_gb": round(reserve / 1024**3, 3),
-            "exclude_paths": db.get_setting(db_path, "exclude_paths", []) or [],
-            "exclude_globs": db.get_setting(db_path, "exclude_globs", []) or [],
+            "exclude_paths": [host_music_path(item, music_root, host_root) for item in stored_paths],
+            "exclude_globs": [_display_exclusion_glob(item, music_root, host_root) for item in stored_globs],
             "timezone": timezone,
+            "host_music_root": str(host_root),
         }
 
     @router.post("/api/settings/read-only")
@@ -203,7 +226,7 @@ def build_admin_router(
         if job_manager.is_running() or scanner.snapshot()["running"]:
             raise HTTPException(status_code=409, detail="Storage settings cannot change while a conversion or scan is active")
         try:
-            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs)
+            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs, host_root)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         reserve = int(request.free_space_reserve_gb * 1024**3)
@@ -219,17 +242,17 @@ def build_admin_router(
         return {
             "free_space_reserve_bytes": reserve,
             "free_space_reserve_gb": round(reserve / 1024**3, 3),
-            "exclude_paths": exact,
-            "exclude_globs": globs,
+            "exclude_paths": [host_music_path(item, music_root, host_root) for item in exact],
+            "exclude_globs": [_display_exclusion_glob(item, music_root, host_root) for item in globs],
         }
 
     @router.post("/api/settings/exclusions/preview")
     def preview_exclusions(request: ExclusionPreviewRequest) -> dict[str, Any]:
         try:
-            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs)
+            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs, host_root)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {**_preview_exclusions(music_root, exact, globs), "exclude_paths": exact, "exclude_globs": globs}
+        return {**_preview_exclusions(music_root, exact, globs), "exclude_paths": [host_music_path(item, music_root, host_root) for item in exact], "exclude_globs": [_display_exclusion_glob(item, music_root, host_root) for item in globs]}
 
     @router.get("/api/runtime/metrics")
     def runtime_metrics(job_id: int | None = None) -> dict[str, Any]:

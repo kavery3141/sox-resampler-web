@@ -81,6 +81,7 @@ function settingsExtrasClearBrowserDefaults(){
     'sox-resampler-library-sort',
     'sox-resampler-source-rate-filters',
     'sox-resampler-last-preset',
+    'sox-resampler-cover-thumbnails',
   ])localStorage.removeItem(key);
   selectedWarningFocus=false;
   if($('r882'))$('r882').checked=false;
@@ -93,6 +94,7 @@ function settingsExtrasClearBrowserDefaults(){
   if($('sortFilter'))$('sortFilter').value='albumartist';
   if($('workerSelect'))$('workerSelect').value='1';
   if(typeof applyAppearance==='function')applyAppearance();
+  if(typeof applyAlbumThumbnailPreference==='function')applyAlbumThumbnailPreference();
   resetAck();
 }
 
