@@ -25,6 +25,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Dockerfile README.md app/main.py app/admin.py app/converter.py app/health_status.py app/jobs.py app/reports.py app/review.py app/resource_control.py app/settings_extras.py app/static/app.js app/static/resource-control.js app/static/settings-extras-ui.js app/static/source-rates.js tests/test_cpu_limit.py tests/test_health_status.py tests/test_job_cpu_limit.py tests/test_resource_control.py
-          git commit -m "Add optional per-worker conversion CPU cap"
+          git add app/converter.py tests/test_cpu_limit.py tests/test_converter_integration.py
+          git commit -m "Harden CPU cap process lifecycle"
           git push
