@@ -10,6 +10,7 @@ from . import db
 
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
+MAINTENANCE_EVENT_LIMIT = 2000
 
 
 def configure_file_logging(data_root: Path) -> Path:
@@ -57,6 +58,17 @@ def record_event(db_path: Path, occurred_at: str, event_type: str, detail: dict[
         conn.execute(
             "INSERT INTO maintenance_events(occurred_at,event_type,detail_json) VALUES(?,?,?)",
             (occurred_at, str(event_type), payload),
+        )
+        # Keep this lightweight audit trail bounded. Detailed diagnostic text belongs in the
+        # rotating application log, not in an ever-growing SQLite table.
+        conn.execute(
+            """
+            DELETE FROM maintenance_events
+            WHERE id NOT IN (
+                SELECT id FROM maintenance_events ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (MAINTENANCE_EVENT_LIMIT,),
         )
     logging.getLogger("sox_resampler.maintenance").info("%s %s", event_type, payload)
 
