@@ -39,24 +39,20 @@ replace_once(
     '''    @router.get("/api/settings")\n    def get_settings() -> dict[str, Any]:\n        reserve = int(db.get_setting(db_path, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))\n        stored_paths = db.get_setting(db_path, "exclude_paths", []) or []\n        stored_globs = db.get_setting(db_path, "exclude_globs", []) or []\n        return {\n            "read_only_mode": bool(db.get_setting(db_path, "read_only_mode", False)),\n            "free_space_reserve_bytes": reserve,\n            "free_space_reserve_gb": round(reserve / 1024**3, 3),\n            "exclude_paths": [host_music_path(item, music_root, host_root) for item in stored_paths],\n            "exclude_globs": [_display_exclusion_glob(item, music_root, host_root) for item in stored_globs],\n            "timezone": timezone,\n            "host_music_root": str(host_root),\n        }\n''',
     "settings display host paths",
 )
-replace_once(
-    "app/admin.py",
-    "            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs)\n",
-    "            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs, host_root)\n",
-    "save exclusion host normalization",
-)
+
+admin = admin_path.read_text(encoding="utf-8")
+old_normalize = "            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs)\n"
+new_normalize = "            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs, host_root)\n"
+count = admin.count(old_normalize)
+if count != 2:
+    raise SystemExit(f"settings exclusion normalization: expected two matches in app/admin.py, found {count}")
+admin_path.write_text(admin.replace(old_normalize, new_normalize), encoding="utf-8")
+
 replace_once(
     "app/admin.py",
     '''        return {\n            "free_space_reserve_bytes": reserve,\n            "free_space_reserve_gb": round(reserve / 1024**3, 3),\n            "exclude_paths": exact,\n            "exclude_globs": globs,\n        }\n''',
     '''        return {\n            "free_space_reserve_bytes": reserve,\n            "free_space_reserve_gb": round(reserve / 1024**3, 3),\n            "exclude_paths": [host_music_path(item, music_root, host_root) for item in exact],\n            "exclude_globs": [_display_exclusion_glob(item, music_root, host_root) for item in globs],\n        }\n''',
     "save exclusion host response",
-)
-# Preview has a second normalization call.
-replace_once(
-    "app/admin.py",
-    "            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs)\n",
-    "            exact, globs = _normalize_exclusions(music_root, request.exclude_paths, request.exclude_globs, host_root)\n",
-    "preview exclusion host normalization",
 )
 replace_once(
     "app/admin.py",
