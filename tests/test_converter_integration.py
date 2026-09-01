@@ -37,6 +37,8 @@ class ConverterIntegrationTest(unittest.TestCase):
 
             original_tags = {k.lower(): tuple(v) for k, v in FLAC(source).tags.items()}
             old_mtime_ns = 1_600_000_000_123_456_789
+            os.chmod(source, 0o664)
+            os.setxattr(source, "user.sox-resampler-test", b"preserve-me")
             os.utime(source, ns=(old_mtime_ns, old_mtime_ns))
 
             result = convert_file(source, FACTORY_DEFAULTS)
@@ -50,6 +52,8 @@ class ConverterIntegrationTest(unittest.TestCase):
             self.assertEqual(output.info.channels, 2)
             self.assertEqual({k.lower(): tuple(v) for k, v in output.tags.items()}, original_tags)
             self.assertEqual(source.stat().st_mtime_ns, old_mtime_ns)
+            self.assertEqual(source.stat().st_mode & 0o777, 0o664)
+            self.assertEqual(os.getxattr(source, "user.sox-resampler-test"), b"preserve-me")
             self.assertIsNotNone(result.temp_sha256)
             self.assertEqual(result.temp_sha256, result.final_sha256)
 
