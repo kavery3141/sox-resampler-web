@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from . import db
@@ -49,8 +50,18 @@ def _resolved_profile(db_path: Path, profile_id: str, raw_profile: str | None) -
         ) from exc
 
 
-def failed_retry_spec(db_path: Path, job_id: int) -> dict[str, Any]:
-    """Return an exact-file retry specification without creating or starting a job."""
+def is_clipping_failure(error: str | None) -> bool:
+    text = str(error or "").casefold()
+    return "clipping" in text or "clipped" in text or "exceeds full scale" in text
+
+
+def _retry_spec(
+    db_path: Path,
+    job_id: int,
+    *,
+    predicate: Callable[[str | None], bool] | None = None,
+    empty_message: str = "This job has no failed files to retry",
+) -> dict[str, Any]:
     with db.session(db_path) as conn:
         job = conn.execute(
             "SELECT id,status,profile_id,profile_json,workers,source_filter_json FROM conversion_jobs WHERE id=?",
@@ -69,8 +80,9 @@ def failed_retry_spec(db_path: Path, job_id: int) -> dict[str, Any]:
             (job_id,),
         ).fetchall()
 
-    if not failed:
-        raise RetrySpecError("This job has no failed files to retry")
+    selected = [row for row in failed if predicate is None or predicate(row["error_text"])]
+    if not selected:
+        raise RetrySpecError(empty_message)
 
     profile_id = str(job["profile_id"])
     profile = _resolved_profile(db_path, profile_id, job["profile_json"])
@@ -97,15 +109,25 @@ def failed_retry_spec(db_path: Path, job_id: int) -> dict[str, Any]:
     album_keys: set[tuple[str, str, str]] = set()
     paths: list[str] = []
     failures: list[dict[str, str]] = []
-    for row in failed:
+    for row in selected:
         path = str(row["path"])
         folder = str(row["folder"] or Path(path).parent)
-        key = (str(row["albumartist"]), str(row["album"]), folder)
+        albumartist = str(row["albumartist"])
+        album = str(row["album"])
+        key = (albumartist, album, folder)
         if key not in album_keys:
             album_keys.add(key)
             albums.append({"albumartist": key[0], "album": key[1], "folder": key[2]})
         paths.append(path)
-        failures.append({"path": path, "error": str(row["error_text"] or "Conversion failed")})
+        failures.append(
+            {
+                "path": path,
+                "error": str(row["error_text"] or "Conversion failed"),
+                "albumartist": albumartist,
+                "album": album,
+                "folder": folder,
+            }
+        )
 
     return {
         "source_job_id": int(job_id),
@@ -120,6 +142,44 @@ def failed_retry_spec(db_path: Path, job_id: int) -> dict[str, Any]:
         "paths": paths,
         "failures": failures,
     }
+
+
+def failed_retry_spec(db_path: Path, job_id: int) -> dict[str, Any]:
+    """Return an exact-file retry specification without creating or starting a job."""
+    return _retry_spec(db_path, job_id)
+
+
+def clipping_retry_spec(
+    db_path: Path,
+    job_id: int,
+    headroom_db: float | None = None,
+) -> dict[str, Any]:
+    """Return exact clipping failures with a more-negative headroom DSP snapshot.
+
+    Headroom is an absolute value in the resolved retry profile. When omitted, the default adds
+    1 dB of attenuation to the original job snapshot. The retry must always add headroom; it may
+    never silently reuse or reduce the attenuation that already failed.
+    """
+    spec = _retry_spec(
+        db_path,
+        job_id,
+        predicate=is_clipping_failure,
+        empty_message="This job has no clipping failures eligible for Retry with Headroom",
+    )
+    original = float(spec["profile"].headroom_db or 0.0)
+    if original <= -30.0:
+        raise RetrySpecError("The original job already used the maximum supported -30 dB headroom")
+    resolved = max(-30.0, original - 1.0) if headroom_db is None else float(headroom_db)
+    if not -30.0 <= resolved < 0.0:
+        raise RetrySpecError("Retry headroom must be between -30.0 dB and less than 0.0 dB")
+    if resolved >= original:
+        raise RetrySpecError(
+            f"Retry headroom must add attenuation beyond the original {original:.1f} dB setting"
+        )
+    spec["original_headroom_db"] = original
+    spec["headroom_db"] = resolved
+    spec["profile"] = replace(spec["profile"], headroom_db=resolved)
+    return spec
 
 
 def _finished_timestamp(value: str | None) -> datetime | None:
