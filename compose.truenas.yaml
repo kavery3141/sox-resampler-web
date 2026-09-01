@@ -10,10 +10,13 @@ services:
       TZ: America/Indiana/Indianapolis
       MUSIC_ROOT: /music
       DATA_ROOT: /data
+      ZFS_POOL: MainStorage
       DEFAULT_TARGET_RATE: "48000"
       DEFAULT_FLAC_COMPRESSION: "4"
       DEFAULT_WORKERS: "1"
       MAX_WORKERS: "2"
+    devices:
+      - /dev/zfs:/dev/zfs
     volumes:
       - /mnt/MainStorage/StorageDataset/Music:/music:rw
       - /mnt/MainStorage/StorageDataset/sox-resampler:/data:rw
