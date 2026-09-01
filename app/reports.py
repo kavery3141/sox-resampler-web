@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db
+from .job_events import load_job_events
 
 
 def _result_payload(raw: str | None) -> dict[str, Any]:
@@ -17,6 +18,40 @@ def _result_payload(raw: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _event_detail_text(event: dict[str, Any]) -> str:
+    detail = event.get("detail") or {}
+    event_type = str(event.get("event_type") or "")
+    if event_type == "workers_changed":
+        return f"workers {detail.get('from')} -> {detail.get('to')} (between files)"
+    if event_type == "runtime_pause":
+        return str(detail.get("reason") or "runtime safety pause")
+    if event_type == "restart_interrupted":
+        return f"restart interrupted previous status {detail.get('previous_status') or 'unknown'}"
+    if event_type == "job_finished":
+        text = f"status {detail.get('status') or ''}".strip()
+        if detail.get("message"):
+            text += f"; {detail['message']}"
+        return text
+    if event_type == "job_created":
+        return f"workers {detail.get('workers')}; profile {detail.get('profile_id') or ''}"
+    if event_type in {"job_started", "job_resumed"}:
+        return f"from {detail.get('previous_status') or 'unknown'} with {detail.get('workers')} worker(s)"
+    if event_type == "file_deferred_busy":
+        return f"deferred {detail.get('path') or ''}; one end-of-batch retry"
+    if event_type in {"pause_requested", "stop_after_album_requested", "cancel_requested"}:
+        return f"from {detail.get('previous_status') or 'unknown'}"
+    if detail:
+        return json.dumps(detail, sort_keys=True, separators=(",", ":"))
+    return ""
+
+
+def _event_timeline_text(events: list[dict[str, Any]]) -> str:
+    return " | ".join(
+        f"{event.get('occurred_at') or ''} {event.get('event_type') or ''}: {_event_detail_text(event)}".strip()
+        for event in events
+    )
 
 
 def render_review_txt(review: dict[str, Any], timezone: str) -> str:
@@ -227,6 +262,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         profile = {}
     if not isinstance(profile, dict):
         profile = {}
+    events = load_job_events(db_path, job_id)
 
     return {
         "job_id": int(job_id),
@@ -241,6 +277,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         "source_filter": source_filter,
         "album_order": album_order,
         "job_error": job_data.get("error_text"),
+        "events": events,
         "totals": {
             "files": len(file_rows),
             "completed": completed,
@@ -276,7 +313,7 @@ def render_job_txt(report: dict[str, Any]) -> str:
         f"Dither: {profile.get('dither') or 'automatic TPDF when reducing bit depth'}",
         f"Headroom: {profile.get('headroom_db') if profile.get('headroom_db') is not None else 0.0} dB",
         f"FLAC compression: {profile.get('flac_compression') if profile.get('flac_compression') is not None else ''}",
-        f"Workers: {report.get('workers')}",
+        f"Final concurrency: {report.get('workers')}",
         f"Files: {totals['files']} total, {totals['completed']} completed, {totals['failed']} failed, {totals['remaining']} remaining",
         f"Source bytes: {totals['source_bytes']}",
         f"Final bytes: {totals['final_bytes']}",
@@ -284,6 +321,15 @@ def render_job_txt(report: dict[str, Any]) -> str:
     ]
     if report.get("job_error"):
         lines.append(f"Job message: {report['job_error']}")
+    events = report.get("events") or []
+    if events:
+        lines.extend(["", "Job event timeline:"])
+        for event in events:
+            detail = _event_detail_text(event)
+            suffix = f" - {detail}" if detail else ""
+            lines.append(
+                f"- {event.get('occurred_at') or ''} [{event.get('event_type') or ''}]{suffix}"
+            )
     lines.extend(["", "Files:"])
     for item in report["files"]:
         lines.append(
@@ -308,6 +354,7 @@ def render_job_txt(report: dict[str, Any]) -> str:
 def render_job_csv(report: dict[str, Any]) -> str:
     output = io.StringIO(newline="")
     profile = report.get("profile") or {}
+    event_timeline = _event_timeline_text(report.get("events") or [])
     fieldnames = [
         "job_id",
         "timezone",
@@ -321,6 +368,8 @@ def render_job_csv(report: dict[str, Any]) -> str:
         "dither",
         "headroom_db",
         "flac_compression",
+        "final_concurrency",
+        "job_event_timeline",
         "albumartist",
         "album",
         "path",
@@ -354,6 +403,8 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "dither": profile.get("dither") or "automatic-tpdf",
                 "headroom_db": profile.get("headroom_db") if profile.get("headroom_db") is not None else 0.0,
                 "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
+                "final_concurrency": report.get("workers") or "",
+                "job_event_timeline": event_timeline,
                 "albumartist": item.get("albumartist") or "",
                 "album": item.get("album") or "",
                 "path": item.get("path") or "",
