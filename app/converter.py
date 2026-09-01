@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import ctypes
-import errno
 import hashlib
 import os
 import re
-import shutil
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -47,7 +45,6 @@ class ConversionResult:
     error: str | None = None
 
 
-# FLAC metadata block types that are audio-layout dependent and cannot simply be copied.
 STREAMINFO = 0
 PADDING = 1
 APPLICATION = 2
@@ -74,7 +71,7 @@ def _sha256(path: Path) -> str:
 
 
 def flac_metadata_block_types(path: Path) -> list[int]:
-    """Return FLAC metadata block type IDs without decoding audio."""
+    """Return native FLAC metadata block type IDs without decoding audio."""
     result: list[int] = []
     with path.open("rb") as handle:
         if handle.read(4) != b"fLaC":
@@ -137,7 +134,6 @@ def compare_user_metadata(source: Path, target: Path) -> None:
 def _copy_filesystem_metadata(source: Path, target: Path) -> None:
     st = source.stat(follow_symlinks=False)
     os.chmod(target, stat.S_IMODE(st.st_mode), follow_symlinks=False)
-
     target_st = target.stat(follow_symlinks=False)
     if (target_st.st_uid, target_st.st_gid) != (st.st_uid, st.st_gid):
         try:
@@ -157,7 +153,6 @@ def _copy_filesystem_metadata(source: Path, target: Path) -> None:
             os.setxattr(target, name, value, follow_symlinks=False)
         except OSError as exc:
             raise ConversionError(f"Cannot preserve extended attribute {name!r}") from exc
-
     os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns), follow_symlinks=False)
 
 
@@ -182,15 +177,12 @@ def _quality_args(profile: ResampleProfile) -> list[str]:
                 "Foobar Ultra 37 exact backend is not integrated yet; refusing to substitute stock SoX -v"
             )
         raise ProfileUnavailable("Ultra 37 backend declaration is incomplete")
-    if profile.quality == "very-high":
-        return ["-v"]
-    if profile.quality == "high":
-        return ["-h"]
-    if profile.quality == "medium":
-        return ["-m"]
-    if profile.quality == "quick":
-        return ["-q"]
-    raise ConversionError(f"Unsupported quality mode: {profile.quality}")
+    return {
+        "very-high": ["-v"],
+        "high": ["-h"],
+        "medium": ["-m"],
+        "quick": ["-q"],
+    }.get(profile.quality) or (_ for _ in ()).throw(ConversionError(f"Unsupported quality mode: {profile.quality}"))
 
 
 def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source_bits: int) -> list[str]:
@@ -207,27 +199,21 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
         raise ConversionError("FLAC compression must be 0 through 8")
 
     command = [
-        "nice", "-n", "10",
-        "ionice", "-c", "2", "-n", "7",
-        "sox", str(source),
-        "-C", str(profile.flac_compression),
+        "nice", "-n", "10", "ionice", "-c", "2", "-n", "7",
+        "sox", str(source), "-C", str(profile.flac_compression),
         "-b", str(target_bits), str(temp),
     ]
     if profile.headroom_db < 0:
         command += ["gain", str(profile.headroom_db)]
-
     command += ["rate"] + _quality_args(profile)
     command += ["-b", f"{profile.passband_percent:g}", "-p", f"{profile.phase_percent:g}"]
     if profile.allow_aliasing:
         command += ["-a"]
     command += [str(profile.target_rate)]
-
     if target_bits < source_bits:
         if profile.dither in (None, "tpdf"):
             command += ["dither"]
-        elif profile.dither == "none":
-            pass
-        else:
+        elif profile.dither != "none":
             raise ConversionError(f"Unsupported dither mode: {profile.dither}")
     return command
 
@@ -289,7 +275,6 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
     target_bits = src_bits if profile.bit_depth == "preserve" else int(profile.bit_depth)
     temp = source.with_name(f".{source.name}.sox-resampler.tmp.flac")
     identity = source_identity(source)
-
     if temp.exists():
         raise ConversionError(f"Temporary file already exists: {temp}")
 
@@ -298,6 +283,8 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
         source=str(source), status="running", command=command, source_rate=src_rate,
         target_rate=profile.target_rate, source_bits=src_bits, target_bits=target_bits,
     )
+    exchanged = False
+    completed = False
 
     try:
         proc = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -308,7 +295,6 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
 
         copy_user_metadata(source, temp)
         compare_user_metadata(source, temp)
-
         out = FLAC(temp)
         if int(out.info.sample_rate) != profile.target_rate:
             raise ConversionError("Output sample rate verification failed")
@@ -316,7 +302,6 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
             raise ConversionError("Output bit-depth verification failed")
         if int(out.info.channels) != src_channels:
             raise ConversionError("Output channel-count verification failed")
-        # One output-sample tolerance plus a tiny decoder timing margin.
         tolerance = max(1.0 / profile.target_rate, 0.00005)
         if abs(float(out.info.length) - src_duration) > tolerance:
             raise ConversionError("Output duration verification failed")
@@ -325,44 +310,43 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
         peak = _peak(temp)
         if peak is not None and peak > 1.0:
             raise ConversionError(f"Output peak exceeds full scale: {peak:.9f}")
-
         _copy_filesystem_metadata(source, temp)
         result.temp_sha256 = _sha256(temp)
 
         if source_identity(source) != identity:
             raise ConversionError("Source changed during conversion; refusing replacement")
 
-        # Exchange instead of blind replace: after this operation the verified new file is at
-        # the original path and the original file is retained at temp until final checksum passes.
+        # The exchange leaves the old original at the hidden temp path until the replacement
+        # has passed a final checksum. This provides rollback without a persistent backup.
         _rename_exchange(source, temp)
-        try:
-            result.final_sha256 = _sha256(source)
-            if result.final_sha256 != result.temp_sha256:
-                _rename_exchange(source, temp)
-                raise ConversionError("Final checksum mismatch; atomic exchange rolled back")
-        except Exception:
-            # If a verification exception occurs while the old original still exists at temp,
-            # make a best-effort rollback unless it already happened above.
-            try:
-                if temp.exists() and _sha256(source) != result.temp_sha256:
-                    _rename_exchange(source, temp)
-            except Exception:
-                pass
-            raise
+        exchanged = True
+        result.final_sha256 = _sha256(source)
+        if result.final_sha256 != result.temp_sha256:
+            raise ConversionError("Final checksum mismatch")
 
-        # temp now contains the original; remove only after final file verification succeeds.
+        # All checks passed. temp still contains the old original and may now be removed.
         temp.unlink()
+        exchanged = False
+        completed = True
         result.status = "completed"
         return result
     except Exception as exc:
-        if temp.exists():
+        if exchanged:
             try:
-                # Never delete the only remaining source. The temp name may contain the old original
-                # only after a successful exchange; successful exchange paths return above.
-                if source.exists():
-                    temp.unlink()
-            except OSError:
-                pass
+                _rename_exchange(source, temp)
+                exchanged = False
+            except Exception as rollback_exc:
+                result.error = f"{exc}; CRITICAL rollback failure: {rollback_exc}"
+                result.status = "failed"
+                return result
         result.status = "failed"
         result.error = str(exc)
         return result
+    finally:
+        # Only remove an unexchanged generated temp file. Never delete temp while it can contain
+        # the old original. A rollback restores new output to temp, which is safe to discard.
+        if not completed and not exchanged and temp.exists():
+            try:
+                temp.unlink()
+            except OSError:
+                pass
