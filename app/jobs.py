@@ -12,6 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import db
+from .busy_guard import SourceBusyError, source_read_guard
 from .converter import convert_file
 from .index_update import refresh_track
 from .profiles import ResampleProfile, get_profile, profile_from_dict
@@ -56,6 +57,7 @@ def ensure_tables(db_path: Path) -> None:
                 path TEXT NOT NULL,
                 source_bytes INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL,
+                defer_count INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT,
                 finished_at TEXT,
                 error_text TEXT,
@@ -68,18 +70,27 @@ def ensure_tables(db_path: Path) -> None:
               ON conversion_files(job_id,status,album_index,file_index);
             """
         )
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversion_jobs)").fetchall()}
-        if "profile_json" not in columns:
+        job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversion_jobs)").fetchall()}
+        if "profile_json" not in job_columns:
             conn.execute("ALTER TABLE conversion_jobs ADD COLUMN profile_json TEXT")
+        file_columns = {row["name"] for row in conn.execute("PRAGMA table_info(conversion_files)").fetchall()}
+        if "defer_count" not in file_columns:
+            conn.execute("ALTER TABLE conversion_files ADD COLUMN defer_count INTEGER NOT NULL DEFAULT 0")
 
 
 def recover_interrupted(db_path: Path, timezone: str) -> None:
     ensure_tables(db_path)
     now = datetime.now(ZoneInfo(timezone)).isoformat(timespec="seconds")
     with db.session(db_path) as conn:
+        # If the container died while doing the one allowed end-of-batch busy retry, restore the
+        # file to deferred rather than pending so restart cannot accidentally grant extra retries.
         conn.execute(
-            "UPDATE conversion_files SET status='pending', started_at=NULL "
-            "WHERE status='running'"
+            """
+            UPDATE conversion_files
+            SET status=CASE WHEN defer_count>0 THEN 'deferred' ELSE 'pending' END,
+                started_at=NULL
+            WHERE status='running'
+            """
         )
         conn.execute(
             "UPDATE conversion_jobs SET status='interrupted', finished_at=?, "
@@ -248,6 +259,21 @@ class ConversionJobManager:
             )
         return payload
 
+    def _record_file_deferred(self, file_id: int, error: str) -> dict[str, Any]:
+        finished = self._now()
+        payload = {"status": "deferred", "error": error, "retry": "end-of-batch-once"}
+        with db.session(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE conversion_files
+                SET status='deferred',defer_count=defer_count+1,started_at=NULL,finished_at=?,
+                    error_text=?,result_json=?
+                WHERE id=?
+                """,
+                (finished, error, json.dumps(payload, separators=(",", ":")), file_id),
+            )
+        return payload
+
     def _run_file(
         self,
         job_id: int,
@@ -257,63 +283,120 @@ class ConversionJobManager:
         expected_bytes: int,
     ) -> dict[str, Any]:
         source = Path(path)
-        started = self._now()
         with db.session(self.db_path) as conn:
-            conn.execute(
-                "UPDATE conversion_files SET status='running',started_at=?,finished_at=NULL,error_text=NULL WHERE id=?",
-                (started, file_id),
-            )
+            row = conn.execute("SELECT defer_count FROM conversion_files WHERE id=?", (file_id,)).fetchone()
+        if not row:
+            return self._record_file_failure(file_id, "Conversion file record disappeared")
+        prior_defers = int(row["defer_count"] or 0)
 
         try:
-            try:
-                current_size = source.stat().st_size
-            except OSError as exc:
-                raise JobError(f"Source unavailable before conversion: {source}: {exc}") from exc
-            if current_size != int(expected_bytes):
-                raise JobError(
-                    f"Source size changed after batch review ({expected_bytes} -> {current_size}); "
-                    f"rescan/review required: {source}"
-                )
-
-            result = convert_file(source, profile)
-            payload = asdict(result)
-            finished = self._now()
-
-            if result.status == "completed":
-                try:
-                    payload["index_refresh"] = refresh_track(
-                        self.db_path,
-                        self.music_root,
-                        source,
-                        self.timezone,
+            with source_read_guard(source) as guard:
+                started = self._now()
+                with db.session(self.db_path) as conn:
+                    conn.execute(
+                        "UPDATE conversion_files SET status='running',started_at=?,finished_at=NULL,error_text=NULL WHERE id=?",
+                        (started, file_id),
                     )
-                    payload["index_refresh_error"] = None
-                except Exception as exc:
-                    # The audio conversion is already safely committed at this point. A local
-                    # SQLite refresh failure must not mislabel the audio operation as failed.
-                    payload["index_refresh"] = None
-                    payload["index_refresh_error"] = str(exc)
 
-            with db.session(self.db_path) as conn:
-                conn.execute(
-                    """
-                    UPDATE conversion_files
-                    SET status=?,finished_at=?,error_text=?,temp_sha256=?,final_sha256=?,result_json=?
-                    WHERE id=?
-                    """,
-                    (
-                        "completed" if result.status == "completed" else "failed",
-                        finished,
-                        result.error,
-                        result.temp_sha256,
-                        result.final_sha256,
-                        json.dumps(payload, separators=(",", ":")),
-                        file_id,
-                    ),
+                try:
+                    current_size = source.stat().st_size
+                except OSError as exc:
+                    raise JobError(f"Source unavailable before conversion: {source}: {exc}") from exc
+                if current_size != int(expected_bytes):
+                    raise JobError(
+                        f"Source size changed after batch review ({expected_bytes} -> {current_size}); "
+                        f"rescan/review required: {source}"
+                    )
+
+                result = convert_file(source, profile)
+                payload = asdict(result)
+                payload["advisory_busy_guard_supported"] = bool(guard.supported)
+                finished = self._now()
+
+                if result.status == "completed":
+                    try:
+                        payload["index_refresh"] = refresh_track(
+                            self.db_path,
+                            self.music_root,
+                            source,
+                            self.timezone,
+                        )
+                        payload["index_refresh_error"] = None
+                    except Exception as exc:
+                        # The audio conversion is already safely committed at this point. A local
+                        # SQLite refresh failure must not mislabel the audio operation as failed.
+                        payload["index_refresh"] = None
+                        payload["index_refresh_error"] = str(exc)
+
+                with db.session(self.db_path) as conn:
+                    conn.execute(
+                        """
+                        UPDATE conversion_files
+                        SET status=?,finished_at=?,error_text=?,temp_sha256=?,final_sha256=?,result_json=?
+                        WHERE id=?
+                        """,
+                        (
+                            "completed" if result.status == "completed" else "failed",
+                            finished,
+                            result.error,
+                            result.temp_sha256,
+                            result.final_sha256,
+                            json.dumps(payload, separators=(",", ":")),
+                            file_id,
+                        ),
+                    )
+                return payload
+        except SourceBusyError as exc:
+            if prior_defers >= 1:
+                return self._record_file_failure(
+                    file_id,
+                    f"Source remained busy after the one deferred end-of-batch retry; original left untouched: {source}",
                 )
-            return payload
+            return self._record_file_deferred(
+                file_id,
+                f"Source is busy under advisory-lock detection; deferred until the end of the batch: {source}",
+            )
         except Exception as exc:
             return self._record_file_failure(file_id, str(exc))
+
+    def _retry_deferred_files(
+        self,
+        job_id: int,
+        profile: ResampleProfile,
+    ) -> tuple[str, str | None]:
+        """Retry each advisory-busy source once, in original batch order."""
+        terminal_status = "completed"
+        terminal_error: str | None = None
+        with db.session(self.db_path) as conn:
+            deferred = conn.execute(
+                """
+                SELECT id,path,source_bytes FROM conversion_files
+                WHERE job_id=? AND status='deferred'
+                ORDER BY album_index,file_index
+                """,
+                (job_id,),
+            ).fetchall()
+        for row in deferred:
+            controls = self._controls(job_id)
+            if controls["cancel"]:
+                return "cancelled", terminal_error
+            if controls["pause"]:
+                return "paused", terminal_error
+            if controls["stop_album"]:
+                return "stopped", terminal_error
+            gate = self._runtime_gate(int(row["source_bytes"]))
+            if gate:
+                return "paused", gate
+            payload = self._run_file(
+                job_id,
+                int(row["id"]),
+                str(row["path"]),
+                profile,
+                int(row["source_bytes"]),
+            )
+            if payload.get("status") == "failed":
+                terminal_error = payload.get("error") or terminal_error
+        return terminal_status, terminal_error
 
     def _run_job(self, job_id: int) -> None:
         terminal_status = "completed"
@@ -410,6 +493,11 @@ class ConversionJobManager:
                 if self._controls(job_id)["stop_album"]:
                     terminal_status = "stopped"
                     break
+
+            if terminal_status == "completed":
+                deferred_status, deferred_error = self._retry_deferred_files(job_id, profile)
+                terminal_status = deferred_status
+                terminal_error = deferred_error or terminal_error
         except Exception as exc:
             terminal_status = "interrupted"
             terminal_error = str(exc)
@@ -474,6 +562,12 @@ class ConversionJobManager:
                 "ORDER BY album_index,file_index",
                 (job_id,),
             ).fetchall()
+            deferred = conn.execute(
+                "SELECT id,albumartist,album,path,error_text,finished_at,defer_count "
+                "FROM conversion_files WHERE job_id=? AND status='deferred' "
+                "ORDER BY album_index,file_index LIMIT 20",
+                (job_id,),
+            ).fetchall()
             recent_failures = conn.execute(
                 "SELECT id,albumartist,album,path,error_text,finished_at "
                 "FROM conversion_files WHERE job_id=? AND status='failed' "
@@ -501,6 +595,7 @@ class ConversionJobManager:
             round(processed_files * 100.0 / total_files, 1) if total_files else 0.0
         )
         result["current_files"] = [dict(r) for r in current]
+        result["deferred_files"] = [dict(r) for r in deferred]
         result["recent_failures"] = [dict(r) for r in recent_failures]
         return result
 
