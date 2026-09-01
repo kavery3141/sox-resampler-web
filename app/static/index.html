@@ -13,8 +13,8 @@
     <button id="navLibrary" class="active">Library</button>
     <button id="navConvert">Convert</button>
     <button id="navHistory">History</button>
-    <button disabled>Settings</button>
-    <button disabled>Maintenance</button>
+    <button id="navSettings">Settings</button>
+    <button id="navMaintenance">Maintenance</button>
   </nav>
 </header>
 <div id="readOnlyBanner" class="banner"><svg class="icon" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>READ-ONLY MODE — Conversion is disabled</div>
@@ -44,7 +44,6 @@
 
   <section id="convertView" class="hidden">
     <div class="sectionTitle"><div><h2 style="margin-bottom:4px">Convert</h2><div class="muted">Review and explicit confirmation are required before any library file is modified.</div></div><span class="spacer"></span><button id="backLibrary">Back to Library</button></div>
-
     <section id="activeJob" class="card hidden" style="margin:14px 0">
       <div class="jobbar"><div><strong id="jobTitle">Conversion job</strong><div id="jobDetail" class="muted"></div></div><span class="spacer"></span><span id="jobStatus" class="statusPill">queued</span></div>
       <div class="progressOuter"><div id="jobProgress" class="progressInner"></div></div>
@@ -69,7 +68,6 @@
         <a id="jobReportCsv" href="#" download><button>Report CSV</button></a>
       </div>
     </section>
-
     <section id="reviewCard" class="card" style="margin:14px 0">
       <div class="toolbar">
         <label>Preset <select id="profileSelect"></select></label>
@@ -91,6 +89,37 @@
     <div class="sectionTitle"><div><h2 style="margin-bottom:4px">History</h2><div class="muted">Persistent conversion jobs and downloadable post-conversion reports.</div></div><span class="spacer"></span><button id="refreshHistory">Refresh</button></div>
     <div id="historyCount" class="muted" style="margin:12px 0">Loading…</div>
     <section class="card list"><div class="historyRow head"><div>Job</div><div>Status</div><div>Preset / Time</div><div>Workers</div><div>Message</div><div>Actions</div></div><div id="historyRows"></div></section>
+  </section>
+
+  <section id="settingsView" class="hidden">
+    <div class="sectionTitle"><div><h2 style="margin-bottom:4px">Settings</h2><div class="muted">Persistent safety and storage preferences. Conversion remains manual regardless of these settings.</div></div></div>
+    <section class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">Read-only Scan Mode</h3>
+      <div class="muted" style="margin-bottom:12px">When enabled, scanning and reporting remain available but conversion is disabled. This setting survives restarts.</div>
+      <div class="toolbar"><button id="enableReadOnly">Enable Read-only Mode</button><button id="disableReadOnly" class="danger">Disable Read-only Mode</button><span id="readOnlyState" class="statusPill">—</span></div>
+      <div id="settingsNotice" class="notice hidden"></div>
+    </section>
+    <section class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">Storage safety</h3>
+      <div class="settingsGrid">
+        <label>Free-space reserve (GB)<input id="reserveGb" type="number" min="1" max="10240" step="1"></label>
+        <label>Exact excluded paths<textarea id="excludePaths" rows="6" placeholder="One path per line"></textarea></label>
+        <label>Excluded glob patterns<textarea id="excludeGlobs" rows="6" placeholder="One glob per line, e.g. */Archive/*"></textarea></label>
+      </div>
+      <div class="toolbar" style="margin-top:14px"><button id="previewExclusions">Preview Exclusions</button><button id="saveStorageSettings" class="primary">Save Storage Settings</button></div>
+      <div id="exclusionPreview" class="notice hidden"></div>
+    </section>
+  </section>
+
+  <section id="maintenanceView" class="hidden">
+    <div class="sectionTitle"><div><h2 style="margin-bottom:4px">Maintenance</h2><div class="muted">Index health, versions and deliberate maintenance actions. None of these actions start audio conversion.</div></div><span class="spacer"></span><button id="refreshMaintenance">Refresh</button></div>
+    <section id="maintenanceSummary" class="summary" style="margin-top:14px"></section>
+    <section class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">Index and database</h3>
+      <div class="toolbar"><button id="maintenanceIncremental">Incremental Rescan</button><button id="maintenanceFull">Full Rescan</button><button id="maintenanceRebuild" class="danger">Rebuild Index</button><button id="maintenanceVacuum">Vacuum Database</button></div>
+      <div id="maintenanceNotice" class="notice hidden"></div>
+    </section>
+    <section class="card" style="margin-top:14px"><h3 style="margin-top:0">Versions and health</h3><div id="maintenanceDetails" class="kv"></div></section>
   </section>
 
   <section id="tray" class="selectedTray hidden"><strong id="selectedCount">0 albums selected</strong><span id="selectedTracks" class="muted"></span><span id="selectedSize" class="muted"></span><span class="spacer"></span><button id="clearSelected">Clear Selection</button><button id="reviewBtn" class="primary">Review Batch</button></section>
