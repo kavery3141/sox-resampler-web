@@ -9,6 +9,7 @@ from app.path_display import (
     decorate_job_report_paths,
     decorate_review_paths,
     host_music_path,
+    internal_music_path,
 )
 from app.reports import render_job_csv, render_job_txt
 
@@ -26,9 +27,27 @@ class HostMusicPathTests(unittest.TestCase):
             "/mnt/MainStorage/StorageDataset/Music/Artist/Album/01.flac",
         )
 
+    def test_true_nas_path_maps_back_to_internal_music_path(self) -> None:
+        self.assertEqual(
+            internal_music_path(
+                "/mnt/MainStorage/StorageDataset/Music/Artist/Album",
+                self.music_root,
+                self.host_root,
+            ),
+            "/music/Artist/Album",
+        )
+        self.assertEqual(
+            internal_music_path("Artist/Album", self.music_root, self.host_root),
+            "/music/Artist/Album",
+        )
+
     def test_unrelated_path_is_not_rewritten(self) -> None:
         self.assertEqual(
             host_music_path("/data/file.txt", self.music_root, self.host_root),
+            "/data/file.txt",
+        )
+        self.assertEqual(
+            internal_music_path("/data/file.txt", self.music_root, self.host_root),
             "/data/file.txt",
         )
 
