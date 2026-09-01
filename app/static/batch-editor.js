@@ -64,6 +64,33 @@ function batchTechnicalSummary(album){
     return `<span>${item.count} track${item.count===1?'':'s'}: ${Number(item.sample_rate/1000).toLocaleString()} → ${Number(item.target_rate/1000).toLocaleString()} kHz · ${esc(item.resample_ratio||'')} · ${esc(item.bits_per_sample)} → ${esc(item.target_bits_per_sample)}-bit${dither}</span>`;
   }).join('')}</div>`;
 }
+function batchRateLabel(rate){
+  const value=Number(rate||0);
+  if(!value)return '—';
+  return value%1000===0?`${value/1000} kHz`:`${(value/1000).toFixed(1)} kHz`;
+}
+function batchTrackDetailHtml(album){
+  const tracks=album.tracks||[];
+  if(!tracks.length)return '';
+  return `<details class="batchTrackDetails"><summary>Exact matching tracks (${tracks.length})</summary><div class="batchTrackList">${tracks.map((track,index)=>{
+    const path=track.display_path||track.path||'';
+    const filename=basename(path)||track.filename||`Track ${index+1}`;
+    const targetRate=track.target_rate||state.review?.profile?.target_rate;
+    const targetBits=track.target_bits_per_sample||track.bits_per_sample;
+    const specs=`${batchRateLabel(track.sample_rate)} → ${batchRateLabel(targetRate)} · ${track.bits_per_sample||'—'} → ${targetBits||'—'}-bit${track.resample_ratio?` · ratio ${track.resample_ratio}`:''}${track.dither?` · ${track.dither} dither`:''}`;
+    const size=`${fmtBytes(track.source_bytes||0)} source${track.estimated_output_bytes?` · ${fmtBytes(track.estimated_output_bytes)} estimated output`:''}`;
+    return `<div class="batchTrackRow"><div class="batchTrackMain"><strong>${esc(filename)}</strong><code>${esc(path)}</code><span class="muted">${esc(specs)}</span><span class="muted">${esc(size)}</span></div><button type="button" class="batchCopyTrackPath" data-track-index="${index}">Copy Path</button></div>`;
+  }).join('')}</div></details>`;
+}
+async function batchCopyPath(button,text){
+  if(!navigator.clipboard?.writeText)return;
+  const prior=button.textContent;
+  try{
+    await navigator.clipboard.writeText(text||'');
+    button.textContent='Copied';
+  }catch(e){button.textContent='Copy failed'}
+  setTimeout(()=>{button.textContent=prior},1200);
+}
 function batchDecorateReview(){
   const container=$('reviewAlbums');
   if(!container||container.classList.contains('hidden')||!state.review)return;
@@ -82,10 +109,16 @@ function batchDecorateReview(){
     row.prepend(controls);
     const summary=batchTechnicalSummary(album);
     if(summary)row.insertAdjacentHTML('beforeend',summary);
+    const trackDetails=batchTrackDetailHtml(album);
+    if(trackDetails)row.insertAdjacentHTML('beforeend',trackDetails);
 
     controls.querySelector('.batchMoveUp').onclick=()=>batchMove(key,-1);
     controls.querySelector('.batchMoveDown').onclick=()=>batchMove(key,1);
     controls.querySelector('.batchRemove').onclick=()=>batchRemove(key);
+    row.querySelectorAll('.batchCopyTrackPath').forEach(button=>{
+      const track=album.tracks?.[Number(button.dataset.trackIndex)];
+      button.onclick=()=>batchCopyPath(button,track?.display_path||track?.path||'');
+    });
     row.addEventListener('dragstart',event=>{
       batchEditorState.dragKey=key;
       row.classList.add('dragging');
