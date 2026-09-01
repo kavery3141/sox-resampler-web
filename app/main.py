@@ -8,7 +8,7 @@ from typing import Any
 
 import psutil
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -17,11 +17,18 @@ from . import db
 from .converter import recover_pending_transactions
 from .jobs import ConversionJobManager, JobError
 from .profiles import get_profile, list_profiles
+from .reports import (
+    load_job_report,
+    render_job_csv,
+    render_job_txt,
+    render_review_csv,
+    render_review_txt,
+)
 from .review import build_batch_review
 from .scanner import LibraryScanner
 from .storage_health import zfs_pool_health
 
-APP_VERSION = "0.4.0-dev"
+APP_VERSION = "0.5.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
@@ -93,8 +100,14 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
         profile = get_profile(request.profile_id)
         reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
         review = build_batch_review(
-            DB_PATH, MUSIC_ROOT, [a.model_dump() for a in request.albums], cleaned_rates,
-            request.above, profile, request.workers, reserve,
+            DB_PATH,
+            MUSIC_ROOT,
+            [a.model_dump() for a in request.albums],
+            cleaned_rates,
+            request.above,
+            profile,
+            request.workers,
+            reserve,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -115,7 +128,11 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
         review["blockers"].append("Another conversion job is currently running")
     if bool(db.get_setting(DB_PATH, "read_only_mode", False)):
         review["blockers"].append("Read-only Scan Mode is enabled")
-    if any(item.get("action") in {"manual_attention"} or str(item.get("action", "")).startswith("recovery_error") for item in recovery_status):
+    if any(
+        item.get("action") in {"manual_attention"}
+        or str(item.get("action", "")).startswith("recovery_error")
+        for item in recovery_status
+    ):
         review["blockers"].append("An interrupted file transaction needs manual attention before conversion")
     zfs = zfs_pool_health()
     review["zfs"] = zfs
@@ -124,6 +141,14 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
     review["blockers"] = list(dict.fromkeys(review["blockers"]))
     review["can_start"] = bool(review["can_start"] and not review["blockers"])
     return review
+
+
+def _attachment(content: str, media_type: str, filename: str) -> Response:
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.on_event("startup")
@@ -174,8 +199,10 @@ def health() -> dict[str, Any]:
         "app_version": APP_VERSION,
         "db_schema": db.SCHEMA_VERSION,
         "music_root": {
-            "path": str(MUSIC_ROOT), "exists": music_exists,
-            "readable": music_readable, "writable": music_writable,
+            "path": str(MUSIC_ROOT),
+            "exists": music_exists,
+            "readable": music_readable,
+            "writable": music_writable,
         },
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
@@ -189,6 +216,7 @@ def health() -> dict[str, Any]:
 def status() -> dict[str, Any]:
     usage = psutil.disk_usage(str(MUSIC_ROOT)) if MUSIC_ROOT.exists() else None
     reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
+    active_job_id = job_manager.active_job_id()
     return {
         "app_version": APP_VERSION,
         "cpu_percent": psutil.cpu_percent(interval=0.1),
@@ -210,7 +238,8 @@ def status() -> dict[str, Any]:
         "zfs": zfs_pool_health(),
         "conversion": {
             "running": job_manager.is_running(),
-            "active_job_id": job_manager.active_job_id(),
+            "active_job_id": active_job_id,
+            "active": job_manager.get_job(active_job_id) if active_job_id is not None else None,
         },
     }
 
@@ -237,13 +266,36 @@ def review_batch(request: BatchReviewRequest) -> dict[str, Any]:
     return _review(request)
 
 
+@app.post("/api/convert/review/report.txt")
+def review_report_txt(request: BatchReviewRequest) -> Response:
+    review = _review(request)
+    return _attachment(
+        render_review_txt(review, TIMEZONE),
+        "text/plain; charset=utf-8",
+        "sox-resampler-pre-conversion.txt",
+    )
+
+
+@app.post("/api/convert/review/report.csv")
+def review_report_csv(request: BatchReviewRequest) -> Response:
+    review = _review(request)
+    return _attachment(
+        render_review_csv(review, TIMEZONE),
+        "text/csv; charset=utf-8",
+        "sox-resampler-pre-conversion.csv",
+    )
+
+
 @app.post("/api/convert/start")
 def start_batch(request: BatchStartRequest) -> dict[str, Any]:
     if not request.acknowledged_replace_in_place:
         raise HTTPException(status_code=400, detail="In-place replacement acknowledgment is required")
     review = _review(request)
     if not review["can_start"]:
-        raise HTTPException(status_code=409, detail={"message": "Batch preflight failed", "blockers": review["blockers"]})
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Batch preflight failed", "blockers": review["blockers"]},
+        )
     try:
         job_id = job_manager.create_job(
             review,
@@ -270,13 +322,41 @@ def conversion_job(job_id: int) -> dict[str, Any]:
     return job
 
 
+@app.get("/api/convert/jobs/{job_id}/report.txt")
+def conversion_report_txt(job_id: int) -> Response:
+    report = load_job_report(DB_PATH, job_id, TIMEZONE)
+    if not report:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _attachment(
+        render_job_txt(report),
+        "text/plain; charset=utf-8",
+        f"sox-resampler-job-{job_id}.txt",
+    )
+
+
+@app.get("/api/convert/jobs/{job_id}/report.csv")
+def conversion_report_csv(job_id: int) -> Response:
+    report = load_job_report(DB_PATH, job_id, TIMEZONE)
+    if not report:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _attachment(
+        render_job_csv(report),
+        "text/csv; charset=utf-8",
+        f"sox-resampler-job-{job_id}.csv",
+    )
+
+
 @app.post("/api/convert/jobs/{job_id}/resume")
 def resume_job(job_id: int) -> dict[str, Any]:
     if scanner.snapshot()["running"]:
         raise HTTPException(status_code=409, detail="A library scan is running")
     if bool(db.get_setting(DB_PATH, "read_only_mode", False)):
         raise HTTPException(status_code=409, detail="Read-only Scan Mode is enabled")
-    if any(item.get("action") == "manual_attention" or str(item.get("action", "")).startswith("recovery_error") for item in recovery_status):
+    if any(
+        item.get("action") == "manual_attention"
+        or str(item.get("action", "")).startswith("recovery_error")
+        for item in recovery_status
+    ):
         raise HTTPException(status_code=409, detail="An interrupted file transaction needs manual attention")
     try:
         job_manager.start(job_id)
