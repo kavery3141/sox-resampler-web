@@ -1,5 +1,46 @@
 const issueUiState={issues:[],severity:'all',query:'',loaded:false};
 
+function issueFolderPaths(issue){
+  if((issue.display_folders||[]).length)return issue.display_folders;
+  if((issue.folders||[]).length)return issue.folders;
+  return [issue.display_folder||issue.folder].filter(Boolean);
+}
+function issueTrackPath(track){return track?.display_path||track?.path||''}
+function issueSummaryText(issue){
+  const lines=[
+    `[${String(issue.severity||'issue').toUpperCase()}] ${issue.albumartist||'Missing Album Artist'} / ${issue.album||'Missing Album'}`,
+    `Issue: ${issue.summary||''}`,
+    `Type: ${issue.issue_type||''}`,
+  ];
+  const folders=issueFolderPaths(issue);
+  if(folders.length){
+    lines.push(folders.length===1?`Folder: ${folders[0]}`:'Folders:');
+    if(folders.length>1)for(const folder of folders)lines.push(`  ${folder}`);
+  }
+  const tracks=issue.affected_tracks||[];
+  if(tracks.length){
+    lines.push('Affected tracks:');
+    for(const track of tracks){
+      const path=issueTrackPath(track)||track.filename||'Unknown track';
+      const value=track.value?` — ${track.value}`:'';
+      lines.push(`  ${path}${value}`);
+    }
+  }
+  return lines.join('\n');
+}
+async function issueCopyText(button,text,successLabel='Copied'){
+  if(!navigator.clipboard?.writeText)return;
+  const prior=button.textContent;
+  try{
+    await navigator.clipboard.writeText(text);
+    button.textContent=successLabel;
+    setTimeout(()=>{button.textContent=prior},1200);
+  }catch(e){
+    button.textContent='Copy failed';
+    setTimeout(()=>{button.textContent=prior},1500);
+  }
+}
+
 function installIssuesUi(){
   const nav=document.querySelector('header nav');
   const issuesButton=document.createElement('button');
@@ -44,10 +85,10 @@ function installIssuesUi(){
     .buttonLink:hover{border-color:#52647a}
     .issueCard{margin-bottom:12px;padding:0;overflow:hidden}
     .issueHead{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}
-    .issueHeadMain{min-width:0;flex:1}.issueAlbum{font-weight:700}.issueArtist{color:var(--muted);font-size:13px;margin-bottom:3px}.issueSummaryText{margin-top:8px}.issueFolder{display:flex;gap:8px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--border);background:#0e1724}.issueFolder code{overflow-wrap:anywhere;flex:1;color:inherit}.issueFolder button,.issueTrack button{padding:5px 8px;font-size:12px;white-space:nowrap}
+    .issueHeadMain{min-width:0;flex:1}.issueHeadActions{display:flex;gap:8px;align-items:flex-start}.issueHeadActions button{white-space:nowrap}.issueAlbum{font-weight:700}.issueArtist{color:var(--muted);font-size:13px;margin-bottom:3px}.issueSummaryText{margin-top:8px}.issueFolder{display:flex;gap:8px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--border);background:#0e1724}.issueFolder code{overflow-wrap:anywhere;flex:1;color:inherit}.issueFolder button,.issueTrack button{padding:5px 8px;font-size:12px;white-space:nowrap}
     body[data-theme="light"] .issueFolder{background:#f8fafc}
     .issueTracks{padding:8px 16px 14px}.issueTrack{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) auto;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}.issueTrack:last-child{border-bottom:0}.issueTrack code{overflow-wrap:anywhere;color:inherit}.issueType{font-size:11px;color:var(--muted);margin-top:4px}.statusPill.blocking{border-color:#733737;color:#ffb0b0}.statusPill.warning{border-color:#6b5328;color:#ffd393}.statusPill.info{border-color:#365b82;color:#bddcff}
-    @media(max-width:900px){.issueSummary{grid-template-columns:1fr 1fr}.issueTrack{grid-template-columns:1fr}.issueTrack button{justify-self:start}}
+    @media(max-width:900px){.issueSummary{grid-template-columns:1fr 1fr}.issueHead{flex-wrap:wrap}.issueHeadActions{width:100%}.issueTrack{grid-template-columns:1fr}.issueTrack button{justify-self:start}}
   `;
   document.head.appendChild(style);
 
@@ -100,8 +141,8 @@ async function loadIssues(force=false){
 function issueMatches(issue){
   if(issueUiState.severity!=='all'&&issue.severity!==issueUiState.severity)return false;
   if(!issueUiState.query)return true;
-  const tracks=(issue.affected_tracks||[]).map(t=>`${t.filename||''} ${t.display_path||t.path||''} ${t.value||''}`).join(' ');
-  const folders=(issue.display_folders||issue.folders||[]).join(' ');
+  const tracks=(issue.affected_tracks||[]).map(t=>`${t.filename||''} ${issueTrackPath(t)} ${t.value||''}`).join(' ');
+  const folders=issueFolderPaths(issue).join(' ');
   return `${issue.albumartist||''} ${issue.album||''} ${issue.display_folder||issue.folder||''} ${folders} ${issue.summary||''} ${issue.issue_type||''} ${tracks}`.toLowerCase().includes(issueUiState.query);
 }
 
@@ -110,17 +151,18 @@ function renderIssues(){
   const box=$('issueRows');
   if(!rows.length){box.innerHTML='<section class="card"><div class="muted">No metadata issues match the current filter.</div></section>';return}
   box.innerHTML=rows.map((issue,index)=>{
-    const folders=(issue.display_folders||[]).length?issue.display_folders:((issue.folders||[]).length?issue.folders:[issue.display_folder||issue.folder].filter(Boolean));
+    const folders=issueFolderPaths(issue);
     return `
     <section class="card issueCard" data-issue-index="${index}">
-      <div class="issueHead"><span class="statusPill ${esc(issue.severity)}">${esc(issue.severity)}</span><div class="issueHeadMain"><div class="issueArtist">${esc(issue.albumartist||'Missing Album Artist')}</div><div class="issueAlbum">${esc(issue.album||'Missing Album')}</div><div class="issueSummaryText">${esc(issue.summary||'')}</div><div class="issueType">${esc(issue.issue_type||'')}</div></div></div>
+      <div class="issueHead"><span class="statusPill ${esc(issue.severity)}">${esc(issue.severity)}</span><div class="issueHeadMain"><div class="issueArtist">${esc(issue.albumartist||'Missing Album Artist')}</div><div class="issueAlbum">${esc(issue.album||'Missing Album')}</div><div class="issueSummaryText">${esc(issue.summary||'')}</div><div class="issueType">${esc(issue.issue_type||'')}</div></div><div class="issueHeadActions"><button type="button" data-copy-summary="${index}">Copy Issue Summary</button></div></div>
       ${folders.map((folder,folderIndex)=>`<div class="issueFolder"><span class="muted">${folders.length===1?'Folder':`Folder ${folderIndex+1}`}</span><code>${esc(folder)}</code><button data-copy-folder="${index}:${folderIndex}">Copy Path</button></div>`).join('')}
-      <div class="issueTracks">${(issue.affected_tracks||[]).map((track,trackIndex)=>`<div class="issueTrack"><code>${esc(track.filename||track.path||'Unknown track')}</code><span>${esc(track.value||'')}</span><button data-copy-track="${index}:${trackIndex}">Copy Track Path</button></div>`).join('')}</div>
+      <div class="issueTracks">${(issue.affected_tracks||[]).map((track,trackIndex)=>`<div class="issueTrack"><code>${esc(track.filename||issueTrackPath(track)||'Unknown track')}</code><span>${esc(track.value||'')}</span><button data-copy-track="${index}:${trackIndex}">Copy Track Path</button></div>`).join('')}</div>
     </section>`;
   }).join('');
 
-  box.querySelectorAll('[data-copy-folder]').forEach(button=>button.onclick=()=>{const [i,f]=button.dataset.copyFolder.split(':').map(Number);const issue=rows[i];const folders=(issue?.display_folders||[]).length?issue.display_folders:((issue?.folders||[]).length?issue.folders:[issue?.display_folder||issue?.folder].filter(Boolean));navigator.clipboard?.writeText(folders[f]||'')});
-  box.querySelectorAll('[data-copy-track]').forEach(button=>button.onclick=()=>{const [i,t]=button.dataset.copyTrack.split(':').map(Number);const track=rows[i]?.affected_tracks?.[t];navigator.clipboard?.writeText(track?.display_path||track?.path||'')});
+  box.querySelectorAll('[data-copy-summary]').forEach(button=>button.onclick=()=>{const issue=rows[Number(button.dataset.copySummary)];if(issue)issueCopyText(button,issueSummaryText(issue),'Copied Summary')});
+  box.querySelectorAll('[data-copy-folder]').forEach(button=>button.onclick=()=>{const [i,f]=button.dataset.copyFolder.split(':').map(Number);const issue=rows[i];const folders=issue?issueFolderPaths(issue):[];issueCopyText(button,folders[f]||'','Copied')});
+  box.querySelectorAll('[data-copy-track]').forEach(button=>button.onclick=()=>{const [i,t]=button.dataset.copyTrack.split(':').map(Number);const track=rows[i]?.affected_tracks?.[t];issueCopyText(button,issueTrackPath(track),'Copied')});
 }
 
 installIssuesUi();
