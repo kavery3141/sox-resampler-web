@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
+from .artwork import build_artwork_router
 from .operations_log import record_event
 
 DEFAULT_DAILY_SCAN_TIME = "10:00"
@@ -115,6 +116,11 @@ def build_settings_extras_router(
 ) -> APIRouter:
     router = APIRouter()
     tz = ZoneInfo(timezone)
+
+    # This application-level router is already mounted by main.py. Compose the read-only artwork
+    # serving API here so album thumbnails remain a distinct module without adding music-mount
+    # reads to candidate/UI endpoints.
+    router.include_router(build_artwork_router(db_path, db_path.parent))
 
     def now() -> str:
         return datetime.now(tz).isoformat(timespec="seconds")
