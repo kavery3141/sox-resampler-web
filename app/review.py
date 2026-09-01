@@ -132,7 +132,9 @@ def build_batch_review(
             hard_blockers.extend(f"{albumartist} / {album}: {x}" for x in album_blockers)
 
     simultaneous_temp = sum(sorted(all_output_estimates, reverse=True)[:workers])
-    profile_ready = profile.quality != "ultra-37" or profile.exact_foobar_match
+    profile_ready = bool(profile.implementation_ready)
+    if not profile_ready:
+        hard_blockers.append(f"Profile backend is not ready: {profile.name}")
 
     return {
         "profile": profile.to_dict(),
