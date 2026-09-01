@@ -10,6 +10,7 @@ from . import db
 from .converter import preview
 from .profiles import ResampleProfile
 from .resource_control import configured_cpu_limit
+from .source_snapshot import capture_source_snapshot
 
 
 KEY_TAGS = (
@@ -248,6 +249,7 @@ def build_batch_review(
                 profile_available = True
                 profile_error = None
                 current_mtime_ns: int | None = None
+                source_snapshot: dict[str, Any] | None = None
                 if not source_path.exists():
                     track_blockers.append("Source file no longer exists; rescan required")
                 else:
@@ -255,11 +257,11 @@ def build_batch_review(
                         resolved_source = source_path.resolve(strict=True)
                         if music_root not in resolved_source.parents:
                             track_blockers.append("Source file is outside the configured music root")
-                        st = resolved_source.stat()
-                        current_mtime_ns = int(st.st_mtime_ns)
-                        if int(st.st_size) != source_size:
+                        source_snapshot = capture_source_snapshot(resolved_source)
+                        current_mtime_ns = int(source_snapshot["mtime_ns"])
+                        if int(source_snapshot["size_bytes"]) != source_size:
                             track_blockers.append(
-                                f"Source size changed since scan ({source_size} -> {st.st_size}); rescan required"
+                                f"Source size changed since scan ({source_size} -> {source_snapshot['size_bytes']}); rescan required"
                             )
                         if int(item.get("mtime_ns") or 0) != current_mtime_ns:
                             track_blockers.append("Source modification time changed since scan; rescan required")
@@ -283,10 +285,9 @@ def build_batch_review(
                         if int(detail["channels"]) != int(item.get("channels") or 0):
                             track_blockers.append("Source channel count changed since scan; rescan required")
 
-                        live_audio = FLAC(resolved_source)
                         for db_name, tag_name in KEY_TAGS:
                             indexed_value = (item.get(db_name) or "").strip()
-                            live_value = (_first(live_audio, tag_name) or "").strip()
+                            live_value = str(source_snapshot["critical_tags"].get(tag_name) or "").strip()
                             if live_value != indexed_value:
                                 track_blockers.append(
                                     f"{tag_name} changed since scan ({indexed_value or '<missing>'} -> {live_value or '<missing>'}); rescan required"
@@ -339,6 +340,7 @@ def build_batch_review(
                         "source_bytes": source_size,
                         "indexed_mtime_ns": int(item.get("mtime_ns") or 0),
                         "current_mtime_ns": current_mtime_ns,
+                        "source_snapshot": source_snapshot,
                         "estimated_output_bytes": estimated,
                         "command": command,
                         "blockers": track_blockers,

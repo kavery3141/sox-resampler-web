@@ -18,6 +18,7 @@ from .index_update import refresh_track
 from .job_events import load_job_events, record_job_event
 from .profiles import ResampleProfile, get_profile, profile_from_dict
 from .resource_control import configured_cpu_limit
+from .source_snapshot import capture_source_snapshot, compare_source_snapshots
 from .storage_health import zfs_pool_health
 
 
@@ -59,6 +60,7 @@ def ensure_tables(db_path: Path) -> None:
                 album TEXT NOT NULL,
                 path TEXT NOT NULL,
                 source_bytes INTEGER NOT NULL DEFAULT 0,
+                source_snapshot_json TEXT,
                 status TEXT NOT NULL,
                 defer_count INTEGER NOT NULL DEFAULT 0,
                 started_at TEXT,
@@ -84,6 +86,8 @@ def ensure_tables(db_path: Path) -> None:
             conn.execute("ALTER TABLE conversion_files ADD COLUMN defer_count INTEGER NOT NULL DEFAULT 0")
         if "source_sha256" not in file_columns:
             conn.execute("ALTER TABLE conversion_files ADD COLUMN source_sha256 TEXT")
+        if "source_snapshot_json" not in file_columns:
+            conn.execute("ALTER TABLE conversion_files ADD COLUMN source_snapshot_json TEXT")
 
 
 def recover_interrupted(db_path: Path, timezone: str) -> None:
@@ -223,15 +227,21 @@ class ConversionJobManager:
                     path = Path(track["path"]).resolve()
                     if self.music_root not in path.parents:
                         raise JobError(f"Track is outside music root: {path}")
+                    source_snapshot = track.get("source_snapshot")
+                    source_snapshot_json = (
+                        json.dumps(source_snapshot, separators=(",", ":"), sort_keys=True)
+                        if isinstance(source_snapshot, dict)
+                        else None
+                    )
                     conn.execute(
                         """
                         INSERT INTO conversion_files(
-                          job_id,album_index,file_index,albumartist,album,path,source_bytes,status
-                        ) VALUES(?,?,?,?,?,?,?,?)
+                          job_id,album_index,file_index,albumartist,album,path,source_bytes,source_snapshot_json,status
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
                         """,
                         (
                             job_id, album_index, file_index, album["albumartist"], album["album"],
-                            str(path), int(track["source_bytes"]), "pending",
+                            str(path), int(track["source_bytes"]), source_snapshot_json, "pending",
                         ),
                     )
         record_job_event(
@@ -348,13 +358,41 @@ class ConversionJobManager:
     ) -> dict[str, Any]:
         source = Path(path)
         with db.session(self.db_path) as conn:
-            row = conn.execute("SELECT defer_count FROM conversion_files WHERE id=?", (file_id,)).fetchone()
+            row = conn.execute(
+                "SELECT defer_count,source_snapshot_json FROM conversion_files WHERE id=?",
+                (file_id,),
+            ).fetchone()
         if not row:
             return self._record_file_failure(file_id, "Conversion file record disappeared")
         prior_defers = int(row["defer_count"] or 0)
 
         try:
+            expected_snapshot: dict[str, Any] | None = None
+            raw_snapshot = row["source_snapshot_json"]
+            if raw_snapshot:
+                try:
+                    parsed_snapshot = json.loads(raw_snapshot)
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise JobError("Stored source identity snapshot is invalid; fresh review required") from exc
+                if not isinstance(parsed_snapshot, dict):
+                    raise JobError("Stored source identity snapshot is invalid; fresh review required")
+                expected_snapshot = parsed_snapshot
+
             with source_read_guard(source) as guard:
+                if expected_snapshot is not None:
+                    current_snapshot = capture_source_snapshot(source)
+                    changes = compare_source_snapshots(expected_snapshot, current_snapshot)
+                    if changes:
+                        self._event(
+                            job_id,
+                            "source_revalidation_failed",
+                            {"file_id": file_id, "path": str(source), "changes": changes},
+                        )
+                        raise JobError(
+                            "Source changed after batch review; original left untouched; "
+                            "rescan/review required: " + "; ".join(changes)
+                        )
+
                 started = self._now()
                 with db.session(self.db_path) as conn:
                     conn.execute(
