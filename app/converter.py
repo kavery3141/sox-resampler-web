@@ -4,11 +4,12 @@ import ctypes
 import hashlib
 import os
 import re
+import signal
 import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from mutagen.flac import FLAC
 
@@ -381,7 +382,74 @@ def _peak(path: Path) -> float | None:
     return float(match.group(1)) if match else None
 
 
-def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | None = None) -> ConversionResult:
+def _check_force_stop(abort_check: Callable[[], bool] | None) -> None:
+    if abort_check is not None and bool(abort_check()):
+        raise ConversionError("Force stop requested by user; original left untouched")
+
+
+def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=2.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _run_sox_command(
+    command: list[str],
+    abort_check: Callable[[], bool] | None,
+) -> subprocess.CompletedProcess[str]:
+    if abort_check is None:
+        return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    _check_force_stop(abort_check)
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.2)
+                return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                if abort_check():
+                    _terminate_process_group(proc)
+                    try:
+                        proc.communicate(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise ConversionError("Force stop requested by user; SoX terminated and original left untouched")
+    except Exception:
+        if proc.poll() is None:
+            _terminate_process_group(proc)
+        raise
+
+
+def convert_file(
+    source: Path,
+    profile: ResampleProfile,
+    journal_root: Path | None = None,
+    *,
+    abort_check: Callable[[], bool] | None = None,
+) -> ConversionResult:
     source = source.resolve(strict=True)
     if source.suffix.lower() != ".flac":
         raise ConversionError("Only FLAC files may be converted")
@@ -418,14 +486,17 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
     journal_prepared = False
 
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        _check_force_stop(abort_check)
+        proc = _run_sox_command(command, abort_check)
         if proc.returncode != 0:
             raise ConversionError(f"SoX failed: {(proc.stderr or proc.stdout).strip()}")
         if re.search(r"\bclipped\b", proc.stderr or "", re.IGNORECASE):
             raise ConversionError(f"SoX reported clipping: {proc.stderr.strip()}")
+        _check_force_stop(abort_check)
 
         copy_user_metadata(source, temp)
         compare_user_metadata(source, temp)
+        _check_force_stop(abort_check)
         out = FLAC(temp)
         if int(out.info.sample_rate) != profile.target_rate:
             raise ConversionError("Output sample rate verification failed")
@@ -438,19 +509,23 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
             raise ConversionError("Output duration verification failed")
 
         _full_decode_test(temp)
+        _check_force_stop(abort_check)
         peak = _peak(temp)
         if peak is not None and peak > 1.0:
             raise ConversionError(f"Output peak exceeds full scale: {peak:.9f}")
 
         _apply_filesystem_metadata(temp, fs_metadata)
         result.temp_sha256 = _sha256(temp)
+        _check_force_stop(abort_check)
 
         if source_identity(source) != identity:
             raise ConversionError("Source changed during conversion; refusing replacement")
         _verify_filesystem_metadata(source, fs_metadata, "Source before replacement")
+        _check_force_stop(abort_check)
 
         journal.prepare(source, temp, identity, result.temp_sha256)
         journal_prepared = True
+        _check_force_stop(abort_check)
 
         _rename_exchange(source, temp)
         exchanged = True
