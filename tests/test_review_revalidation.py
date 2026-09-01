@@ -46,7 +46,7 @@ class ReviewRevalidationTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def review(self) -> dict:
+    def review(self, include_paths: set[str] | None = None) -> dict:
         return build_batch_review(
             db_path=self.db_path,
             music_root=self.music,
@@ -62,6 +62,7 @@ class ReviewRevalidationTest(unittest.TestCase):
             profile=FOOBAR_ULTRA_37,
             workers=1,
             reserve_bytes=10 * 1024**3,
+            include_paths=include_paths,
         )
 
     def test_unchanged_indexed_album_passes_source_revalidation(self) -> None:
@@ -88,6 +89,31 @@ class ReviewRevalidationTest(unittest.TestCase):
         self.assertFalse(review["can_start"])
         text = " | ".join(review["blockers"])
         self.assertIn("Album track count changed since scan", text)
+
+    def test_exact_path_retry_review_does_not_pull_other_matching_tracks(self) -> None:
+        second = self.folder / "02 - Also High Rate.flac"
+        second.write_bytes(self.track.read_bytes())
+        audio = FLAC(second)
+        audio["TITLE"] = ["Also High Rate"]
+        audio["TRACKNUMBER"] = ["2"]
+        audio.save()
+        refresh_track(
+            self.db_path,
+            self.music,
+            second,
+            "America/Indiana/Indianapolis",
+        )
+
+        review = self.review(include_paths={str(self.track)})
+        self.assertTrue(review["can_start"], review["blockers"])
+        self.assertEqual(review["matching_tracks"], 1)
+        self.assertEqual(review["albums"][0]["tracks"][0]["path"], str(self.track))
+
+    def test_missing_exact_retry_path_is_a_hard_blocker(self) -> None:
+        missing = str(self.folder / "99 - Missing.flac")
+        review = self.review(include_paths={missing})
+        self.assertFalse(review["can_start"])
+        self.assertIn("no longer present in the local index", " | ".join(review["blockers"]))
 
 
 if __name__ == "__main__":
