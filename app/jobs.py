@@ -438,7 +438,7 @@ class ConversionJobManager:
         self,
         job_id: int,
         profile: ResampleProfile,
-        source_pre_hash: bool,
+        source_pre_hash: bool = False,
     ) -> tuple[str, str | None]:
         """Retry each advisory-busy source once, in original batch order."""
         terminal_status = "completed"
