@@ -102,3 +102,4 @@ installSavingsSort();
 $('homeOpenCandidates').onclick=openHighRateCandidates;
 render();
 if(restoredSourceRateFilters)loadCandidates();
+if(typeof loadUiAddon==='function')loadUiAddon('/static/job-events.js');
