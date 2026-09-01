@@ -15,7 +15,6 @@ def replace_once(path: str, old: str, new: str, label: str) -> None:
 # admin.py: move timing math into the reusable durable-event timing module, keeping the old
 # private function name as a compatibility wrapper for existing tests/callers.
 admin_path = Path("app/admin.py")
-admin = admin_path.read_text(encoding="utf-8")
 replace_once(
     "app/admin.py",
     "from .job_maintenance import clear_terminal_history, history_summary\n",
@@ -23,13 +22,18 @@ replace_once(
     "admin timing import",
 )
 admin = admin_path.read_text(encoding="utf-8")
-start = admin.index("def _timestamp(value: str | None) -> float | None:\n")
-end = admin.index("def build_admin_router(\n", start)
+timestamp_start = admin.index("def _timestamp(value: str | None) -> float | None:\n")
+recovery_start = admin.index("def _recovery_summary(", timestamp_start)
+admin = admin[:timestamp_start] + admin[recovery_start:]
+admin_path.write_text(admin, encoding="utf-8")
+admin = admin_path.read_text(encoding="utf-8")
+runtime_start = admin.index("def _job_runtime_times(db_path: Path, job_id: int)")
+build_start = admin.index("def build_admin_router(\n", runtime_start)
 wrapper = (
     "def _job_runtime_times(db_path: Path, job_id: int) -> dict[str, float | int | str | None]:\n"
     "    return job_runtime_times(db_path, job_id)\n\n\n"
 )
-admin_path.write_text(admin[:start] + wrapper + admin[end:], encoding="utf-8")
+admin_path.write_text(admin[:runtime_start] + wrapper + admin[build_start:], encoding="utf-8")
 
 # reports.py: make the same durable timing breakdown part of the audit report.
 replace_once(
