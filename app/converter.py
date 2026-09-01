@@ -272,6 +272,8 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
         raise ConversionError("Phase must be between 0 and 100 percent")
     if not 0 <= profile.flac_compression <= 8:
         raise ConversionError("FLAC compression must be 0 through 8")
+    if not -30.0 <= profile.headroom_db <= 0.0:
+        raise ConversionError("Headroom must be between -30.0 dB and 0.0 dB")
     if not profile.implementation_ready:
         raise ProfileUnavailable(f"Profile backend is not ready: {profile.name}")
 
@@ -321,6 +323,8 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
     if target_bits < source_bits:
         if profile.dither in (None, "tpdf"):
             command += ["dither"]
+        elif profile.dither == "shibata":
+            command += ["dither", "-f", "shibata"]
         elif profile.dither != "none":
             raise ConversionError(f"Unsupported dither mode: {profile.dither}")
     return command
