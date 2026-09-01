@@ -182,6 +182,26 @@ def clipping_retry_spec(
     return spec
 
 
+def retry_options(db_path: Path, job_id: int) -> dict[str, Any]:
+    """Return cheap retry capability metadata; never performs file preflight or starts work."""
+    spec = failed_retry_spec(db_path, job_id)
+    clipping = [item for item in spec["failures"] if is_clipping_failure(item.get("error"))]
+    original_headroom = float(spec["profile"].headroom_db or 0.0)
+    default_headroom = None
+    headroom_available = bool(clipping) and original_headroom > -30.0
+    if headroom_available:
+        default_headroom = max(-30.0, original_headroom - 1.0)
+    return {
+        "job_id": int(job_id),
+        "failed_files": len(spec["paths"]),
+        "clipping_failures": len(clipping),
+        "retry_failed_available": bool(spec["paths"]),
+        "retry_with_headroom_available": headroom_available,
+        "original_headroom_db": original_headroom,
+        "default_headroom_db": default_headroom,
+    }
+
+
 def _finished_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
