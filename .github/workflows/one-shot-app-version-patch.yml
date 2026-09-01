@@ -1,0 +1,30 @@
+name: One-shot app version wiring
+
+on:
+  push:
+    paths:
+      - tools/one_shot_app_version_patch.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Wire runtime app version
+        run: python tools/one_shot_app_version_patch.py
+      - name: Commit patched application
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/main.py
+          git commit -m "Read application version from image metadata"
+          git push
