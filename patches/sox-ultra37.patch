@@ -1,0 +1,12 @@
+--- a/src/rate.c
++++ b/src/rate.c
+@@
+-  assert(!bits || (15 <= bits && bits <= 33));
++  /* foo_dsp_resampler 0.8.9 exposes accuracy beyond stock SoX's 33-bit
++   * development limit. Keep the stock algorithm but permit double-precision
++   * rate processing requests up to 53 bits; the app's Ultra 37 profile uses 37.
++   */
++  assert(!bits || (15 <= bits && bits <= 53));
+@@
+-    GETOPT_NUMERIC(optstate, 'd', bit_depth, 15, 33)
++    GETOPT_NUMERIC(optstate, 'd', bit_depth, 15, 53)
