@@ -141,4 +141,5 @@ if(typeof loadUiAddon==='function'){
   loadUiAddon('/static/library-breadcrumbs.js');
   loadUiAddon('/static/settings-extras-ui.js');
   loadUiAddon('/static/album-thumbnails.js');
+  loadUiAddon('/static/artwork-maintenance.js');
 }
