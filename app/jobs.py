@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from . import db
 from .converter import convert_file
+from .index_update import refresh_track
 from .profiles import get_profile
 from .storage_health import zfs_pool_health
 
@@ -88,6 +89,7 @@ class ConversionJobManager:
     def __init__(self, db_path: Path, music_root: Path, timezone: str) -> None:
         self.db_path = db_path
         self.music_root = music_root.resolve()
+        self.timezone = timezone
         self.tz = ZoneInfo(timezone)
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
@@ -195,7 +197,12 @@ class ConversionJobManager:
                     (self._now(), job_id),
                 )
             self._active_job_id = job_id
-            self._thread = threading.Thread(target=self._run_job, args=(job_id,), daemon=True, name=f"convert-{job_id}")
+            self._thread = threading.Thread(
+                target=self._run_job,
+                args=(job_id,),
+                daemon=True,
+                name=f"convert-{job_id}",
+            )
             self._thread.start()
 
     def _controls(self, job_id: int) -> dict[str, bool]:
@@ -212,39 +219,87 @@ class ConversionJobManager:
             "cancel": bool(row["cancel_requested"]),
         }
 
-    def _run_file(self, job_id: int, file_id: int, path: str, profile_id: str, expected_bytes: int) -> dict[str, Any]:
-        source = Path(path)
-        try:
-            current_size = source.stat().st_size
-        except OSError as exc:
-            raise JobError(f"Source unavailable before conversion: {source}: {exc}") from exc
-        if current_size != int(expected_bytes):
-            raise JobError(
-                f"Source size changed after batch review ({expected_bytes} -> {current_size}); rescan/review required: {source}"
-            )
-        started = self._now()
-        with db.session(self.db_path) as conn:
-            conn.execute(
-                "UPDATE conversion_files SET status='running',started_at=?,error_text=NULL WHERE id=?",
-                (started, file_id),
-            )
-        profile = get_profile(profile_id)
-        result = convert_file(source, profile)
-        payload = asdict(result)
+    def _record_file_failure(self, file_id: int, error: str) -> dict[str, Any]:
         finished = self._now()
+        payload = {"status": "failed", "error": error}
         with db.session(self.db_path) as conn:
             conn.execute(
                 """
-                UPDATE conversion_files SET status=?,finished_at=?,error_text=?,temp_sha256=?,final_sha256=?,result_json=?
+                UPDATE conversion_files
+                SET status='failed',finished_at=?,error_text=?,result_json=?
                 WHERE id=?
                 """,
-                (
-                    "completed" if result.status == "completed" else "failed",
-                    finished, result.error, result.temp_sha256, result.final_sha256,
-                    json.dumps(payload, separators=(",", ":")), file_id,
-                ),
+                (finished, error, json.dumps(payload, separators=(",", ":")), file_id),
             )
         return payload
+
+    def _run_file(
+        self,
+        job_id: int,
+        file_id: int,
+        path: str,
+        profile_id: str,
+        expected_bytes: int,
+    ) -> dict[str, Any]:
+        source = Path(path)
+        started = self._now()
+        with db.session(self.db_path) as conn:
+            conn.execute(
+                "UPDATE conversion_files SET status='running',started_at=?,finished_at=NULL,error_text=NULL WHERE id=?",
+                (started, file_id),
+            )
+
+        try:
+            try:
+                current_size = source.stat().st_size
+            except OSError as exc:
+                raise JobError(f"Source unavailable before conversion: {source}: {exc}") from exc
+            if current_size != int(expected_bytes):
+                raise JobError(
+                    f"Source size changed after batch review ({expected_bytes} -> {current_size}); "
+                    f"rescan/review required: {source}"
+                )
+
+            profile = get_profile(profile_id)
+            result = convert_file(source, profile)
+            payload = asdict(result)
+            finished = self._now()
+
+            if result.status == "completed":
+                try:
+                    payload["index_refresh"] = refresh_track(
+                        self.db_path,
+                        self.music_root,
+                        source,
+                        self.timezone,
+                    )
+                    payload["index_refresh_error"] = None
+                except Exception as exc:
+                    # The audio conversion is already safely committed at this point. A local
+                    # SQLite refresh failure must not mislabel the audio operation as failed.
+                    payload["index_refresh"] = None
+                    payload["index_refresh_error"] = str(exc)
+
+            with db.session(self.db_path) as conn:
+                conn.execute(
+                    """
+                    UPDATE conversion_files
+                    SET status=?,finished_at=?,error_text=?,temp_sha256=?,final_sha256=?,result_json=?
+                    WHERE id=?
+                    """,
+                    (
+                        "completed" if result.status == "completed" else "failed",
+                        finished,
+                        result.error,
+                        result.temp_sha256,
+                        result.final_sha256,
+                        json.dumps(payload, separators=(",", ":")),
+                        file_id,
+                    ),
+                )
+            return payload
+        except Exception as exc:
+            return self._record_file_failure(file_id, str(exc))
 
     def _run_job(self, job_id: int) -> None:
         terminal_status = "completed"
@@ -293,9 +348,12 @@ class ConversionJobManager:
                         terminal_status = "paused"
                         break
                     with db.session(self.db_path) as conn:
-                        current_workers = int(conn.execute(
-                            "SELECT workers FROM conversion_jobs WHERE id=?", (job_id,)
-                        ).fetchone()["workers"])
+                        current_workers = int(
+                            conn.execute(
+                                "SELECT workers FROM conversion_jobs WHERE id=?",
+                                (job_id,),
+                            ).fetchone()["workers"]
+                        )
                     wave = files[cursor: cursor + max(1, min(2, current_workers))]
                     required_temp = sum(int(r["source_bytes"]) for r in wave)
                     gate = self._runtime_gate(required_temp)
@@ -304,19 +362,26 @@ class ConversionJobManager:
                         terminal_error = gate
                         break
                     cursor += len(wave)
-                    with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix=f"job-{job_id}") as pool:
+                    with ThreadPoolExecutor(
+                        max_workers=len(wave),
+                        thread_name_prefix=f"job-{job_id}",
+                    ) as pool:
                         futures = [
                             pool.submit(
-                                self._run_file, job_id, r["id"], r["path"], profile_id, int(r["source_bytes"])
+                                self._run_file,
+                                job_id,
+                                r["id"],
+                                r["path"],
+                                profile_id,
+                                int(r["source_bytes"]),
                             )
                             for r in wave
                         ]
                         for future in as_completed(futures):
-                            try:
-                                future.result()
-                            except Exception as exc:
-                                terminal_error = str(exc)
-                    # Control requests and runtime storage safeguards are honored between active files/waves.
+                            payload = future.result()
+                            if payload.get("status") == "failed":
+                                terminal_error = payload.get("error") or terminal_error
+                    # Control requests and runtime safeguards are honored between active waves.
                 if terminal_status in ("paused", "cancelled"):
                     break
                 if self._controls(job_id)["stop_album"]:
@@ -347,6 +412,9 @@ class ConversionJobManager:
         if workers not in (1, 2):
             raise JobError("Workers must be 1 or 2")
         with db.session(self.db_path) as conn:
+            exists = conn.execute("SELECT id FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
+            if not exists:
+                raise JobError("Job not found")
             conn.execute("UPDATE conversion_jobs SET workers=? WHERE id=?", (workers, job_id))
 
     def _set_flag(self, job_id: int, column: str, value: int, status: str) -> None:
@@ -356,31 +424,59 @@ class ConversionJobManager:
             exists = conn.execute("SELECT id FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
             if not exists:
                 raise JobError("Job not found")
-            conn.execute(f"UPDATE conversion_jobs SET {column}=?,status=? WHERE id=?", (value, status, job_id))
+            conn.execute(
+                f"UPDATE conversion_jobs SET {column}=?,status=? WHERE id=?",
+                (value, status, job_id),
+            )
 
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         with db.session(self.db_path) as conn:
             job = conn.execute("SELECT * FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
             if not job:
                 return None
-            counts = {
-                row["status"]: row["count"] for row in conn.execute(
-                    "SELECT status,COUNT(*) count FROM conversion_files WHERE job_id=? GROUP BY status",
-                    (job_id,),
-                ).fetchall()
-            }
-            current = conn.execute(
-                "SELECT * FROM conversion_files WHERE job_id=? AND status='running' ORDER BY album_index,file_index",
+            count_rows = conn.execute(
+                "SELECT status,COUNT(*) count,SUM(source_bytes) bytes "
+                "FROM conversion_files WHERE job_id=? GROUP BY status",
                 (job_id,),
             ).fetchall()
+            counts = {row["status"]: int(row["count"] or 0) for row in count_rows}
+            bytes_by_status = {row["status"]: int(row["bytes"] or 0) for row in count_rows}
+            total = conn.execute(
+                "SELECT COUNT(*) count,COALESCE(SUM(source_bytes),0) bytes "
+                "FROM conversion_files WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            current = conn.execute(
+                "SELECT * FROM conversion_files WHERE job_id=? AND status='running' "
+                "ORDER BY album_index,file_index",
+                (job_id,),
+            ).fetchall()
+            recent_failures = conn.execute(
+                "SELECT id,albumartist,album,path,error_text,finished_at "
+                "FROM conversion_files WHERE job_id=? AND status='failed' "
+                "ORDER BY id DESC LIMIT 20",
+                (job_id,),
+            ).fetchall()
+
+        total_files = int(total["count"] or 0)
+        processed_files = counts.get("completed", 0) + counts.get("failed", 0)
         result = dict(job)
         result["counts"] = counts
+        result["bytes_by_status"] = bytes_by_status
+        result["total_files"] = total_files
+        result["total_source_bytes"] = int(total["bytes"] or 0)
+        result["processed_files"] = processed_files
+        result["progress_percent"] = (
+            round(processed_files * 100.0 / total_files, 1) if total_files else 0.0
+        )
         result["current_files"] = [dict(r) for r in current]
+        result["recent_failures"] = [dict(r) for r in recent_failures]
         return result
 
     def recent_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         with db.session(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT * FROM conversion_jobs ORDER BY id DESC LIMIT ?", (max(1, min(200, limit)),)
+                "SELECT * FROM conversion_jobs ORDER BY id DESC LIMIT ?",
+                (max(1, min(200, limit)),),
             ).fetchall()
         return [dict(r) for r in rows]
