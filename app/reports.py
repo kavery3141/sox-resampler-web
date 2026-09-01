@@ -27,7 +27,13 @@ def render_review_txt(review: dict[str, Any], timezone: str) -> str:
         f"Preset: {profile.get('name') or profile.get('id') or ''}",
         f"Target sample rate: {profile.get('target_rate') or ''}",
         f"Bit depth: {profile.get('bit_depth') or ''}",
-        f"FLAC compression: {profile.get('flac_compression') or ''}",
+        f"Quality: {profile.get('quality') or ''}",
+        f"Passband: {profile.get('passband_percent') if profile.get('passband_percent') is not None else ''}%",
+        f"Phase response: {profile.get('phase_percent') if profile.get('phase_percent') is not None else ''}%",
+        f"Allow aliasing: {'yes' if profile.get('allow_aliasing') else 'no'}",
+        f"Dither: {profile.get('dither') or 'automatic TPDF when reducing bit depth'}",
+        f"Headroom: {profile.get('headroom_db') if profile.get('headroom_db') is not None else 0.0} dB",
+        f"FLAC compression: {profile.get('flac_compression') if profile.get('flac_compression') is not None else ''}",
         f"Workers: {review.get('workers') or ''}",
         f"Albums: {review.get('album_count') or 0}",
         f"Matching tracks: {review.get('matching_tracks') or 0}",
@@ -62,8 +68,10 @@ def render_review_txt(review: dict[str, Any], timezone: str) -> str:
             lines.append(
                 "  Track: "
                 f"{track.get('path') or ''}; "
-                f"{track.get('sample_rate') or ''} Hz; "
-                f"{track.get('bits_per_sample') or ''}-bit; "
+                f"{track.get('sample_rate') or ''} -> {track.get('target_rate') or profile.get('target_rate') or ''} Hz; "
+                f"ratio {track.get('resample_ratio') or ''}; "
+                f"{track.get('bits_per_sample') or ''} -> {track.get('target_bits_per_sample') or track.get('bits_per_sample') or ''}-bit; "
+                f"dither {track.get('dither') or 'not applied'}; "
                 f"{track.get('channels') or ''} channels; "
                 f"{track.get('source_bytes') or 0} bytes"
             )
@@ -78,13 +86,25 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
         "timezone",
         "profile_id",
         "profile_name",
+        "target_rate",
+        "target_bit_depth",
+        "quality",
+        "passband_percent",
+        "phase_percent",
+        "allow_aliasing",
+        "dither",
+        "headroom_db",
+        "flac_compression",
         "workers",
         "albumartist",
         "album",
         "folder",
         "path",
         "sample_rate",
+        "resample_ratio",
         "bits_per_sample",
+        "track_target_bits",
+        "track_dither",
         "channels",
         "source_bytes",
         "estimated_output_bytes",
@@ -106,13 +126,25 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
                     "timezone": timezone,
                     "profile_id": profile.get("id") or "",
                     "profile_name": profile.get("name") or "",
+                    "target_rate": profile.get("target_rate") or "",
+                    "target_bit_depth": profile.get("bit_depth") or "",
+                    "quality": profile.get("quality") or "",
+                    "passband_percent": profile.get("passband_percent") if profile.get("passband_percent") is not None else "",
+                    "phase_percent": profile.get("phase_percent") if profile.get("phase_percent") is not None else "",
+                    "allow_aliasing": bool(profile.get("allow_aliasing")),
+                    "dither": profile.get("dither") or "automatic-tpdf",
+                    "headroom_db": profile.get("headroom_db") if profile.get("headroom_db") is not None else 0.0,
+                    "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
                     "workers": review.get("workers") or "",
                     "albumartist": album.get("albumartist") or "",
                     "album": album.get("album") or "",
                     "folder": album.get("folder") or "",
                     "path": track.get("path") or "",
                     "sample_rate": track.get("sample_rate") or "",
+                    "resample_ratio": track.get("resample_ratio") or "",
                     "bits_per_sample": track.get("bits_per_sample") or "",
+                    "track_target_bits": track.get("target_bits_per_sample") or "",
+                    "track_dither": track.get("dither") or "",
                     "channels": track.get("channels") or "",
                     "source_bytes": track.get("source_bytes") or 0,
                     "estimated_output_bytes": track.get("estimated_output_bytes") or 0,
@@ -189,6 +221,12 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         album_order = json.loads(job_data.get("album_order_json") or "[]")
     except json.JSONDecodeError:
         album_order = []
+    try:
+        profile = json.loads(job_data.get("profile_json") or "{}")
+    except json.JSONDecodeError:
+        profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
 
     return {
         "job_id": int(job_id),
@@ -198,6 +236,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
         "started_at": job_data.get("started_at"),
         "finished_at": job_data.get("finished_at"),
         "profile_id": job_data.get("profile_id"),
+        "profile": profile,
         "workers": int(job_data.get("workers") or 1),
         "source_filter": source_filter,
         "album_order": album_order,
@@ -217,6 +256,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
 
 def render_job_txt(report: dict[str, Any]) -> str:
     totals = report["totals"]
+    profile = report.get("profile") or {}
     lines = [
         "SoX Resampler Web - Conversion Report",
         f"Job: {report['job_id']}",
@@ -225,7 +265,17 @@ def render_job_txt(report: dict[str, Any]) -> str:
         f"Created: {report.get('created_at') or ''}",
         f"Started: {report.get('started_at') or ''}",
         f"Finished: {report.get('finished_at') or ''}",
-        f"Preset: {report.get('profile_id') or ''}",
+        f"Preset: {profile.get('name') or report.get('profile_id') or ''}",
+        f"Preset ID: {report.get('profile_id') or ''}",
+        f"Target sample rate: {profile.get('target_rate') or ''}",
+        f"Bit depth: {profile.get('bit_depth') or ''}",
+        f"Quality: {profile.get('quality') or ''}",
+        f"Passband: {profile.get('passband_percent') if profile.get('passband_percent') is not None else ''}%",
+        f"Phase response: {profile.get('phase_percent') if profile.get('phase_percent') is not None else ''}%",
+        f"Allow aliasing: {'yes' if profile.get('allow_aliasing') else 'no'}",
+        f"Dither: {profile.get('dither') or 'automatic TPDF when reducing bit depth'}",
+        f"Headroom: {profile.get('headroom_db') if profile.get('headroom_db') is not None else 0.0} dB",
+        f"FLAC compression: {profile.get('flac_compression') if profile.get('flac_compression') is not None else ''}",
         f"Workers: {report.get('workers')}",
         f"Files: {totals['files']} total, {totals['completed']} completed, {totals['failed']} failed, {totals['remaining']} remaining",
         f"Source bytes: {totals['source_bytes']}",
@@ -257,10 +307,20 @@ def render_job_txt(report: dict[str, Any]) -> str:
 
 def render_job_csv(report: dict[str, Any]) -> str:
     output = io.StringIO(newline="")
+    profile = report.get("profile") or {}
     fieldnames = [
         "job_id",
         "timezone",
         "status",
+        "profile_id",
+        "profile_name",
+        "quality",
+        "passband_percent",
+        "phase_percent",
+        "allow_aliasing",
+        "dither",
+        "headroom_db",
+        "flac_compression",
         "albumartist",
         "album",
         "path",
@@ -285,6 +345,15 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "job_id": report["job_id"],
                 "timezone": report["timezone"],
                 "status": item["status"],
+                "profile_id": report.get("profile_id") or "",
+                "profile_name": profile.get("name") or "",
+                "quality": profile.get("quality") or "",
+                "passband_percent": profile.get("passband_percent") if profile.get("passband_percent") is not None else "",
+                "phase_percent": profile.get("phase_percent") if profile.get("phase_percent") is not None else "",
+                "allow_aliasing": bool(profile.get("allow_aliasing")),
+                "dither": profile.get("dither") or "automatic-tpdf",
+                "headroom_db": profile.get("headroom_db") if profile.get("headroom_db") is not None else 0.0,
+                "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
                 "albumartist": item.get("albumartist") or "",
                 "album": item.get("album") or "",
                 "path": item.get("path") or "",
