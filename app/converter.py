@@ -13,7 +13,7 @@ from typing import Any
 from mutagen.flac import FLAC
 
 from .profiles import ResampleProfile
-from .transactions import ReplacementJournal
+from .transactions import ReplacementJournal, recover_journals
 
 
 class ConversionError(RuntimeError):
@@ -73,7 +73,6 @@ def _sha256(path: Path) -> str:
 
 
 def flac_metadata_block_types(path: Path) -> list[int]:
-    """Return native FLAC metadata block type IDs without decoding audio."""
     result: list[int] = []
     with path.open("rb") as handle:
         if handle.read(4) != b"fLaC":
@@ -159,7 +158,6 @@ def _copy_filesystem_metadata(source: Path, target: Path) -> None:
 
 
 def _rename_exchange(path_a: Path, path_b: Path) -> None:
-    """Atomically exchange two same-filesystem paths, retaining rollback capability."""
     libc = ctypes.CDLL(None, use_errno=True)
     fn = getattr(libc, "renameat2", None)
     if fn is None:
@@ -170,6 +168,11 @@ def _rename_exchange(path_a: Path, path_b: Path) -> None:
     if rc != 0:
         err = ctypes.get_errno()
         raise ConversionError(f"Atomic exchange failed: {os.strerror(err)}")
+
+
+def recover_pending_transactions(data_root: Path | None = None) -> list[dict[str, str]]:
+    root = (data_root or Path(os.getenv("DATA_ROOT", "/data"))) / "transactions"
+    return recover_journals(root, _rename_exchange)
 
 
 def _stock_quality_args(profile: ResampleProfile) -> list[str]:
@@ -300,7 +303,8 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
     )
     exchanged = False
     completed = False
-    journal = ReplacementJournal(journal_root, source) if journal_root is not None else None
+    journal_root = journal_root or Path(os.getenv("DATA_ROOT", "/data")) / "transactions"
+    journal = ReplacementJournal(journal_root, source)
     journal_prepared = False
 
     try:
@@ -333,26 +337,22 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
         if source_identity(source) != identity:
             raise ConversionError("Source changed during conversion; refusing replacement")
 
-        if journal is not None:
-            journal.prepare(source, temp, identity, result.temp_sha256)
-            journal_prepared = True
+        journal.prepare(source, temp, identity, result.temp_sha256)
+        journal_prepared = True
 
         _rename_exchange(source, temp)
         exchanged = True
-        if journal is not None:
-            journal.mark_exchanged()
+        journal.mark_exchanged()
 
         result.final_sha256 = _sha256(source)
         if result.final_sha256 != result.temp_sha256:
             raise ConversionError("Final checksum mismatch")
-        if journal is not None:
-            journal.mark_verified()
+        journal.mark_verified()
 
         temp.unlink()
         exchanged = False
-        if journal is not None:
-            journal.clear()
-            journal_prepared = False
+        journal.clear()
+        journal_prepared = False
         completed = True
         result.status = "completed"
         return result
@@ -361,14 +361,13 @@ def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | No
             try:
                 _rename_exchange(source, temp)
                 exchanged = False
-                if journal is not None:
-                    journal.clear()
-                    journal_prepared = False
+                journal.clear()
+                journal_prepared = False
             except Exception as rollback_exc:
                 result.error = f"{exc}; CRITICAL rollback failure: {rollback_exc}"
                 result.status = "failed"
                 return result
-        elif journal is not None and journal_prepared:
+        elif journal_prepared:
             journal.clear()
             journal_prepared = False
         result.status = "failed"
