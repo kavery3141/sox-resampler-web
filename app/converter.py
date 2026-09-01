@@ -55,6 +55,7 @@ PICTURE = 6
 
 AT_FDCWD = -100
 RENAME_EXCHANGE = 2
+SOX_ULTRA_BIN = os.getenv("SOX_ULTRA_BIN", "/opt/sox-ultra/bin/sox")
 
 
 def source_identity(path: Path) -> SourceIdentity:
@@ -170,19 +171,16 @@ def _rename_exchange(path_a: Path, path_b: Path) -> None:
         raise ConversionError(f"Atomic exchange failed: {os.strerror(err)}")
 
 
-def _quality_args(profile: ResampleProfile) -> list[str]:
-    if profile.quality == "ultra-37":
-        if not profile.exact_foobar_match:
-            raise ProfileUnavailable(
-                "Foobar Ultra 37 exact backend is not integrated yet; refusing to substitute stock SoX -v"
-            )
-        raise ProfileUnavailable("Ultra 37 backend declaration is incomplete")
-    return {
+def _stock_quality_args(profile: ResampleProfile) -> list[str]:
+    quality = {
         "very-high": ["-v"],
         "high": ["-h"],
         "medium": ["-m"],
         "quick": ["-q"],
-    }.get(profile.quality) or (_ for _ in ()).throw(ConversionError(f"Unsupported quality mode: {profile.quality}"))
+    }.get(profile.quality)
+    if quality is None:
+        raise ConversionError(f"Unsupported stock SoX quality mode: {profile.quality}")
+    return quality
 
 
 def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source_bits: int) -> list[str]:
@@ -197,19 +195,38 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
         raise ConversionError("Phase must be between 0 and 100 percent")
     if not 0 <= profile.flac_compression <= 8:
         raise ConversionError("FLAC compression must be 0 through 8")
+    if not profile.implementation_ready:
+        raise ProfileUnavailable(f"Profile backend is not ready: {profile.name}")
+
+    ultra37 = profile.quality == "ultra-37"
+    sox_binary = SOX_ULTRA_BIN if ultra37 else "sox"
+    if ultra37 and not Path(sox_binary).is_file():
+        raise ProfileUnavailable(f"Ultra 37 SoX backend is missing: {sox_binary}")
 
     command = [
         "nice", "-n", "10", "ionice", "-c", "2", "-n", "7",
-        "sox", str(source), "-C", str(profile.flac_compression),
+        sox_binary, str(source), "-C", str(profile.flac_compression),
         "-b", str(target_bits), str(temp),
     ]
     if profile.headroom_db < 0:
         command += ["gain", str(profile.headroom_db)]
-    command += ["rate"] + _quality_args(profile)
-    command += ["-b", f"{profile.passband_percent:g}", "-p", f"{profile.phase_percent:g}"]
+
+    if ultra37:
+        # The foobar component's Ultra 37 label corresponds to 37 bits of rate-filter
+        # accuracy (~222.8 dB). -B is SoX's 0 dB passband control, matching the component's
+        # passband percentage semantics more closely than public -b (3 dB bandwidth).
+        command += [
+            "rate", "-d", "37", "-B", f"{profile.passband_percent:g}",
+            "-p", f"{profile.phase_percent:g}",
+        ]
+    else:
+        command += ["rate"] + _stock_quality_args(profile)
+        command += ["-b", f"{profile.passband_percent:g}", "-p", f"{profile.phase_percent:g}"]
+
     if profile.allow_aliasing:
         command += ["-a"]
     command += [str(profile.target_rate)]
+
     if target_bits < source_bits:
         if profile.dither in (None, "tpdf"):
             command += ["dither"]
