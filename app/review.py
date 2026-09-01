@@ -3,13 +3,47 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from mutagen.flac import FLAC
+
 from . import db
 from .converter import preview
 from .profiles import ResampleProfile
 
 
+KEY_TAGS = (
+    ("albumartist", "ALBUMARTIST"),
+    ("album", "ALBUM"),
+    ("releasetype", "RELEASETYPE"),
+    ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"),
+)
+
+
 def _matches_rate(sample_rate: int, rates: set[int], above: int | None) -> bool:
     return sample_rate in rates or (above is not None and sample_rate > above)
+
+
+def _first(audio: FLAC, key: str) -> str | None:
+    values = audio.get(key)
+    if not values:
+        return None
+    value = str(values[0]).strip()
+    return value or None
+
+
+def _physical_album_track_count(folder: Path, albumartist: str, album: str) -> int:
+    if not folder.is_dir():
+        return 0
+    count = 0
+    for path in folder.iterdir():
+        if path.name.startswith(".") or path.is_symlink() or not path.is_file() or path.suffix.lower() != ".flac":
+            continue
+        try:
+            audio = FLAC(path)
+        except Exception:
+            continue
+        if (_first(audio, "albumartist") or "") == albumartist and (_first(audio, "album") or "") == album:
+            count += 1
+    return count
 
 
 def build_batch_review(
@@ -24,6 +58,7 @@ def build_batch_review(
 ) -> dict[str, Any]:
     if workers not in (1, 2):
         raise ValueError("Workers must be 1 or 2")
+    music_root = music_root.resolve()
     rate_set = set(rates)
     albums: list[dict[str, Any]] = []
     all_output_estimates: list[int] = []
@@ -37,6 +72,7 @@ def build_batch_review(
             albumartist = key.get("albumartist", "")
             album = key.get("album", "")
             folder = key.get("folder", "")
+            folder_path = Path(folder)
             rows = conn.execute(
                 """
                 SELECT * FROM tracks
@@ -53,6 +89,20 @@ def build_batch_review(
             album_blockers: list[str] = []
             matching = 0
 
+            if rows:
+                try:
+                    resolved_folder = folder_path.resolve(strict=True)
+                    if music_root != resolved_folder and music_root not in resolved_folder.parents:
+                        album_blockers.append("Album folder is outside the configured music root")
+                    else:
+                        current_album_count = _physical_album_track_count(resolved_folder, albumartist, album)
+                        if current_album_count != len(rows):
+                            album_blockers.append(
+                                f"Album track count changed since scan (indexed {len(rows)}, current {current_album_count}); rescan required"
+                            )
+                except OSError:
+                    album_blockers.append("Album folder no longer exists; rescan required")
+
             for row in rows:
                 item = dict(row)
                 source_rate = int(item["sample_rate"] or 0)
@@ -67,11 +117,42 @@ def build_batch_review(
                 command: list[str] = []
                 profile_available = True
                 profile_error = None
+                current_mtime_ns: int | None = None
                 if not source_path.exists():
                     track_blockers.append("Source file no longer exists; rescan required")
                 else:
                     try:
-                        detail = preview(source_path, profile)
+                        resolved_source = source_path.resolve(strict=True)
+                        if music_root not in resolved_source.parents:
+                            track_blockers.append("Source file is outside the configured music root")
+                        st = resolved_source.stat()
+                        current_mtime_ns = int(st.st_mtime_ns)
+                        if int(st.st_size) != source_size:
+                            track_blockers.append(
+                                f"Source size changed since scan ({source_size} -> {st.st_size}); rescan required"
+                            )
+                        if int(item.get("mtime_ns") or 0) != current_mtime_ns:
+                            track_blockers.append("Source modification time changed since scan; rescan required")
+
+                        detail = preview(resolved_source, profile)
+                        if int(detail["sample_rate"]) != source_rate:
+                            track_blockers.append(
+                                f"Source sample rate changed since scan ({source_rate} -> {detail['sample_rate']}); rescan required"
+                            )
+                        if int(detail["bits_per_sample"]) != int(item.get("bits_per_sample") or 0):
+                            track_blockers.append("Source bit depth changed since scan; rescan required")
+                        if int(detail["channels"]) != int(item.get("channels") or 0):
+                            track_blockers.append("Source channel count changed since scan; rescan required")
+
+                        live_audio = FLAC(resolved_source)
+                        for db_name, tag_name in KEY_TAGS:
+                            indexed_value = (item.get(db_name) or "").strip()
+                            live_value = (_first(live_audio, tag_name) or "").strip()
+                            if live_value != indexed_value:
+                                track_blockers.append(
+                                    f"{tag_name} changed since scan ({indexed_value or '<missing>'} -> {live_value or '<missing>'}); rescan required"
+                                )
+
                         track_blockers.extend(detail["preservation_blockers"])
                         command = detail["command"]
                         profile_available = bool(detail["profile_available"])
@@ -86,26 +167,32 @@ def build_batch_review(
                 replaygain_complete = all(
                     item.get(name) is not None
                     for name in (
-                        "replaygain_track_gain", "replaygain_track_peak",
-                        "replaygain_album_gain", "replaygain_album_peak",
+                        "replaygain_track_gain",
+                        "replaygain_track_peak",
+                        "replaygain_album_gain",
+                        "replaygain_album_peak",
                     )
                 )
                 if not replaygain_complete and "ReplayGain incomplete" not in album_warnings:
                     album_warnings.append("ReplayGain incomplete")
 
-                tracks.append({
-                    "path": item["path"],
-                    "filename": item["filename"],
-                    "sample_rate": source_rate,
-                    "bits_per_sample": item["bits_per_sample"],
-                    "channels": item["channels"],
-                    "duration": item["duration"],
-                    "source_bytes": source_size,
-                    "estimated_output_bytes": estimated,
-                    "command": command,
-                    "blockers": track_blockers,
-                    "replaygain_complete": replaygain_complete,
-                })
+                tracks.append(
+                    {
+                        "path": item["path"],
+                        "filename": item["filename"],
+                        "sample_rate": source_rate,
+                        "bits_per_sample": item["bits_per_sample"],
+                        "channels": item["channels"],
+                        "duration": item["duration"],
+                        "source_bytes": source_size,
+                        "indexed_mtime_ns": int(item.get("mtime_ns") or 0),
+                        "current_mtime_ns": current_mtime_ns,
+                        "estimated_output_bytes": estimated,
+                        "command": command,
+                        "blockers": track_blockers,
+                        "replaygain_complete": replaygain_complete,
+                    }
+                )
                 album_source += source_size
                 album_output += estimated
                 all_output_estimates.append(estimated)
@@ -117,6 +204,7 @@ def build_batch_review(
                 "albumartist": albumartist,
                 "album": album,
                 "folder": folder,
+                "indexed_tracks": len(rows),
                 "matching_tracks": matching,
                 "source_bytes": album_source,
                 "estimated_output_bytes": album_output,
