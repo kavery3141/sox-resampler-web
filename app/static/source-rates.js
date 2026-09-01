@@ -12,6 +12,50 @@ for(const id of ['r882','r1764']){
   if(input)input.addEventListener('change',()=>{resetAck();loadCandidates()});
 }
 
+function installSelectionTrayEstimates(){
+  const tray=$('tray');
+  if(!tray)return;
+  const spacer=tray.querySelector('.spacer');
+  if(!$('selectedWarnings')){
+    const warnings=document.createElement('span');
+    warnings.id='selectedWarnings';warnings.className='muted';
+    spacer?tray.insertBefore(warnings,spacer):tray.appendChild(warnings);
+  }
+  if(!$('selectedSavings')){
+    const savings=document.createElement('span');
+    savings.id='selectedSavings';savings.className='muted';
+    spacer?tray.insertBefore(savings,spacer):tray.appendChild(savings);
+  }
+}
+
+const sourceRateBaseUpdateTray=updateTray;
+updateTray=function(){
+  sourceRateBaseUpdateTray();
+  installSelectionTrayEstimates();
+  const albums=[...state.selected.values()];
+  const warningAlbums=albums.filter(album=>(album.warnings||[]).length>0).length;
+  const estimatedSavings=albums.reduce((total,album)=>total+Number(album.estimated_savings_48k_bytes||0),0);
+  $('selectedWarnings').textContent=`${warningAlbums} warning album${warningAlbums===1?'':'s'}`;
+  $('selectedSavings').textContent=`${fmtBytes(estimatedSavings)} est. savings @ 48 kHz`;
+};
+
+function installSavingsSort(){
+  const select=$('sortFilter');
+  if(!select||[...select.options].some(option=>option.value==='savings'))return;
+  const option=document.createElement('option');
+  option.value='savings';option.textContent='Estimated savings';
+  const recent=[...select.options].find(item=>item.value==='recent');
+  if(recent)select.insertBefore(option,recent);else select.appendChild(option);
+  if(localStorage.getItem('sox-resampler-library-sort')==='savings')select.value='savings';
+}
+
+const sourceRateBaseFiltered=filtered;
+filtered=function(){
+  const rows=sourceRateBaseFiltered();
+  if($('sortFilter')?.value!=='savings')return rows;
+  return [...rows].sort((a,b)=>Number(b.estimated_savings_48k_bytes||0)-Number(a.estimated_savings_48k_bytes||0));
+};
+
 openHighRateCandidates=function(){
   if($('r882'))$('r882').checked=false;
   $('r96').checked=true;
@@ -26,4 +70,7 @@ openHighRateCandidates=function(){
   showView('library');
 };
 
+installSelectionTrayEstimates();
+installSavingsSort();
 $('homeOpenCandidates').onclick=openHighRateCandidates;
+render();
