@@ -164,6 +164,11 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
       SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END) matching_tracks,
       SUM(CASE WHEN NOT ({where}) THEN 1 ELSE 0 END) untouched_tracks,
       SUM(CASE WHEN ({where}) THEN size_bytes ELSE 0 END) matching_bytes,
+      SUM(
+        CASE WHEN ({where}) AND sample_rate > 0
+             THEN MAX(1, CAST(size_bytes * (48000.0 / sample_rate) * 1.10 AS INTEGER))
+             ELSE 0 END
+      ) estimated_output_48k_bytes,
       GROUP_CONCAT(DISTINCT CASE WHEN ({where}) THEN sample_rate END) source_rates,
       GROUP_CONCAT(DISTINCT CASE WHEN ({where}) THEN bits_per_sample END) bit_depths,
       GROUP_CONCAT(DISTINCT channels) channels,
@@ -187,8 +192,10 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
     ORDER BY albumartist COLLATE NOCASE, album COLLATE NOCASE
     """
 
-    # the rate predicate appears four times in the SELECT expression
-    qargs = args * 4
+    # The rate predicate is expanded independently in six SELECT expressions above. Each
+    # expansion has its own positional SQLite placeholders, so the argument list must be repeated
+    # the same number of times.
+    qargs = args * 6
     with session(path) as db:
         rows = [dict(r) for r in db.execute(sql, qargs).fetchall()]
 
@@ -212,4 +219,9 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
         row["selectable"] = not blockers
         row["source_rates"] = sorted(int(x) for x in (row["source_rates"] or "").split(",") if x)
         row["bit_depths"] = sorted(int(x) for x in (row["bit_depths"] or "").split(",") if x)
+        row["estimated_output_48k_bytes"] = int(row["estimated_output_48k_bytes"] or 0)
+        row["estimated_savings_48k_bytes"] = max(
+            0,
+            int(row["matching_bytes"] or 0) - row["estimated_output_48k_bytes"],
+        )
     return rows
