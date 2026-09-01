@@ -13,6 +13,7 @@ from typing import Any
 from mutagen.flac import FLAC
 
 from .profiles import ResampleProfile
+from .transactions import ReplacementJournal
 
 
 class ConversionError(RuntimeError):
@@ -212,9 +213,6 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
         command += ["gain", str(profile.headroom_db)]
 
     if ultra37:
-        # The foobar component's Ultra 37 label corresponds to 37 bits of rate-filter
-        # accuracy (~222.8 dB). -B is SoX's 0 dB passband control, matching the component's
-        # passband percentage semantics more closely than public -b (3 dB bandwidth).
         command += [
             "rate", "-d", "37", "-B", f"{profile.passband_percent:g}",
             "-p", f"{profile.phase_percent:g}",
@@ -276,7 +274,7 @@ def _peak(path: Path) -> float | None:
     return float(match.group(1)) if match else None
 
 
-def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
+def convert_file(source: Path, profile: ResampleProfile, journal_root: Path | None = None) -> ConversionResult:
     source = source.resolve(strict=True)
     if source.suffix.lower() != ".flac":
         raise ConversionError("Only FLAC files may be converted")
@@ -302,6 +300,8 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
     )
     exchanged = False
     completed = False
+    journal = ReplacementJournal(journal_root, source) if journal_root is not None else None
+    journal_prepared = False
 
     try:
         proc = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -333,17 +333,26 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
         if source_identity(source) != identity:
             raise ConversionError("Source changed during conversion; refusing replacement")
 
-        # The exchange leaves the old original at the hidden temp path until the replacement
-        # has passed a final checksum. This provides rollback without a persistent backup.
+        if journal is not None:
+            journal.prepare(source, temp, identity, result.temp_sha256)
+            journal_prepared = True
+
         _rename_exchange(source, temp)
         exchanged = True
+        if journal is not None:
+            journal.mark_exchanged()
+
         result.final_sha256 = _sha256(source)
         if result.final_sha256 != result.temp_sha256:
             raise ConversionError("Final checksum mismatch")
+        if journal is not None:
+            journal.mark_verified()
 
-        # All checks passed. temp still contains the old original and may now be removed.
         temp.unlink()
         exchanged = False
+        if journal is not None:
+            journal.clear()
+            journal_prepared = False
         completed = True
         result.status = "completed"
         return result
@@ -352,16 +361,20 @@ def convert_file(source: Path, profile: ResampleProfile) -> ConversionResult:
             try:
                 _rename_exchange(source, temp)
                 exchanged = False
+                if journal is not None:
+                    journal.clear()
+                    journal_prepared = False
             except Exception as rollback_exc:
                 result.error = f"{exc}; CRITICAL rollback failure: {rollback_exc}"
                 result.status = "failed"
                 return result
+        elif journal is not None and journal_prepared:
+            journal.clear()
+            journal_prepared = False
         result.status = "failed"
         result.error = str(exc)
         return result
     finally:
-        # Only remove an unexchanged generated temp file. Never delete temp while it can contain
-        # the old original. A rollback restores new output to temp, which is safe to discard.
         if not completed and not exchanged and temp.exists():
             try:
                 temp.unlink()
