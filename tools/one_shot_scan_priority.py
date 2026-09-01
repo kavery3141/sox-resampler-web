@@ -40,11 +40,7 @@ def apply_background_priority(
     io_level: int = DEFAULT_IO_LEVEL,
     skip_main_thread: bool = True,
 ) -> dict[str, Any]:
-    """Best-effort Linux per-thread priority reduction for background storage work.
-
-    The web/API process must remain responsive, so only the scanner worker thread is demoted.
-    Failure to apply a scheduler hint never turns an otherwise safe discovery scan into a failure.
-    """
+    """Best-effort Linux per-thread priority reduction for background storage work."""
     result: dict[str, Any] = {
         "cpu_nice": int(cpu_nice),
         "io_class": "best-effort",
@@ -93,8 +89,8 @@ replace_once(
 )
 replace_once(
     "app/scanner.py",
-    '''    last_error: str | None = None\n''',
-    '''    last_error: str | None = None\n    background_priority: dict[str, Any] | None = None\n''',
+    "    last_error: str | None = None\n",
+    "    last_error: str | None = None\n    background_priority: dict[str, Any] | None = None\n",
     "scanner priority state",
 )
 replace_once(
@@ -104,13 +100,6 @@ replace_once(
     "scanner priority application",
 )
 
-replace_once(
-    "README.md",
-    '''- Incremental and full local SQLite library scans; full scans can pause/resume and interrupted scans never auto-resume.\n''',
-    '''- Incremental and full local SQLite library scans; full scans can pause/resume and interrupted scans never auto-resume. Background scanner workers run with best-effort low CPU and I/O scheduling priority so discovery work yields to interactive NAS workloads.\n''',
-    "README scan priority documentation",
-)
-
 write_new(
     "tests/test_background_priority.py",
     '''from __future__ import annotations
@@ -118,7 +107,7 @@ write_new(
 import subprocess
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from app.background_priority import apply_background_priority
 
@@ -166,7 +155,7 @@ class BackgroundPriorityTests(unittest.TestCase):
         self.assertIn("CPU priority hint unavailable", result["warnings"][0])
         self.assertIn("operation not permitted", result["warnings"][1])
 
-    def test_main_thread_is_left_unchanged_for_synchronous_test_or_admin_calls(self) -> None:
+    def test_main_thread_is_left_unchanged(self) -> None:
         main = threading.main_thread()
         with (
             patch("app.background_priority.threading.current_thread", return_value=main),
