@@ -43,7 +43,7 @@ function readinessInstall(){
 }
 
 function readinessBool(ok,good='Ready',bad='Blocked'){
-  return `<strong class="${ok?'goodText':'badText'}">${esc(ok?good:bad)}</strong>`;
+  return `<strong class="statusPill ${ok?'completed':'interrupted'}">${esc(ok?good:bad)}</strong>`;
 }
 
 function readinessRecoveryBlocked(items){
