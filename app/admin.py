@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
+from .force_stop import request_abort
 from .job_maintenance import clear_terminal_history, history_summary
 from .operations_log import log_disk_usage, recent_events, record_event
 from .storage_health import zfs_pool_health
@@ -39,6 +40,10 @@ class ExclusionPreviewRequest(BaseModel):
 
 class ConfirmMaintenanceRequest(BaseModel):
     confirmed: bool = False
+
+
+class ForceStopRequest(BaseModel):
+    file_id: int = Field(gt=0)
 
 
 def _tool_version(command: list[str]) -> str | None:
@@ -356,6 +361,34 @@ def build_admin_router(
                 "python": _tool_version(["python", "--version"]),
             },
         }
+
+    @router.post("/api/convert/jobs/{job_id}/force-stop")
+    def force_stop_file(job_id: int, request: ForceStopRequest) -> dict[str, Any]:
+        with db.session(db_path) as conn:
+            row = conn.execute(
+                "SELECT id,path,status FROM conversion_files WHERE id=? AND job_id=?",
+                (request.file_id, job_id),
+            ).fetchone()
+            job = conn.execute("SELECT id,status FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not row:
+            raise HTTPException(status_code=404, detail="File is not part of this conversion job")
+        if row["status"] != "running":
+            raise HTTPException(status_code=409, detail="That file is no longer actively converting")
+        if not request_abort(row["path"]):
+            raise HTTPException(
+                status_code=409,
+                detail="The converter is between cancellable stages; refresh before trying again",
+            )
+        result = {
+            "job_id": job_id,
+            "file_id": int(row["id"]),
+            "path": row["path"],
+            "status": "force-stop-requested",
+        }
+        record_event(db_path, event_time(), "force_stop_requested", result)
+        return result
 
     @router.post("/api/scan/pause")
     def pause_full_scan() -> dict[str, Any]:
