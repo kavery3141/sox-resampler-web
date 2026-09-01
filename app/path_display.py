@@ -20,6 +20,26 @@ def host_music_path(value: str | Path | None, music_root: Path, host_music_root:
     return str(host_music_root / relative)
 
 
+def internal_music_path(value: str | Path | None, music_root: Path, host_music_root: Path) -> str:
+    """Normalize a user-facing music path to the container's operational music mount.
+
+    Absolute TrueNAS host paths and already-internal paths are accepted. Relative values are
+    interpreted beneath the internal music root. Paths outside both configured roots are returned
+    normalized but otherwise unchanged so the caller can reject them explicitly.
+    """
+    if value is None:
+        return ""
+    internal_root = music_root.resolve(strict=False)
+    host_root = host_music_root.resolve(strict=False)
+    candidate = Path(str(value).strip())
+    if not candidate.is_absolute():
+        candidate = internal_root / candidate
+    normalized = candidate.resolve(strict=False)
+    if normalized == host_root or host_root in normalized.parents:
+        return str(internal_root / normalized.relative_to(host_root))
+    return str(normalized)
+
+
 def decorate_album_paths(
     album: dict[str, Any], music_root: Path, host_music_root: Path
 ) -> dict[str, Any]:
