@@ -11,22 +11,40 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from . import db
+from .profiles import get_profile, list_profiles
+from .review import build_batch_review
 from .scanner import LibraryScanner
 
-APP_VERSION = "0.2.0-dev"
+APP_VERSION = "0.3.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
 DB_PATH = DATA_ROOT / "sox-resampler.db"
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
+DEFAULT_RESERVE_BYTES = 10 * 1024**3
 
 app = FastAPI(title="SoX Resampler Web", version=APP_VERSION)
 app.mount("/static", StaticFiles(directory=STATIC_ROOT), name="static")
 scanner = LibraryScanner(MUSIC_ROOT, DB_PATH, TIMEZONE)
 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="library-scan")
 scheduler = BackgroundScheduler(timezone=TIMEZONE)
+
+
+class AlbumKey(BaseModel):
+    albumartist: str
+    album: str
+    folder: str
+
+
+class BatchReviewRequest(BaseModel):
+    albums: list[AlbumKey] = Field(min_length=1, max_length=500)
+    rates: list[int] = Field(default_factory=lambda: [96000, 192000])
+    above: int | None = None
+    profile_id: str = "foobar-ultra-37-48k"
+    workers: int = 1
 
 
 def _tool_version(command: list[str]) -> str | None:
@@ -83,6 +101,7 @@ def health() -> dict[str, Any]:
     data_exists = DATA_ROOT.exists()
     data_writable = os.access(DATA_ROOT, os.W_OK) if data_exists else False
     music_readable = os.access(MUSIC_ROOT, os.R_OK) if music_exists else False
+    music_writable = os.access(MUSIC_ROOT, os.W_OK) if music_exists else False
     sox = _tool_version(["sox", "--version"])
     flac = _tool_version(["flac", "--version"])
     try:
@@ -95,7 +114,10 @@ def health() -> dict[str, Any]:
         "status": "ok" if healthy else "degraded",
         "app_version": APP_VERSION,
         "db_schema": db.SCHEMA_VERSION,
-        "music_root": {"path": str(MUSIC_ROOT), "exists": music_exists, "readable": music_readable},
+        "music_root": {
+            "path": str(MUSIC_ROOT), "exists": music_exists,
+            "readable": music_readable, "writable": music_writable,
+        },
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
         "tools": {"sox": sox, "flac": flac},
@@ -105,6 +127,7 @@ def health() -> dict[str, Any]:
 @app.get("/api/status")
 def status() -> dict[str, Any]:
     usage = psutil.disk_usage(str(MUSIC_ROOT)) if MUSIC_ROOT.exists() else None
+    reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
     return {
         "app_version": APP_VERSION,
         "cpu_percent": psutil.cpu_percent(interval=0.1),
@@ -117,10 +140,16 @@ def status() -> dict[str, Any]:
         "default_workers": int(os.getenv("DEFAULT_WORKERS", "1")),
         "max_workers": int(os.getenv("MAX_WORKERS", "2")),
         "free_bytes": usage.free if usage else None,
+        "free_space_reserve_bytes": reserve,
         "library": db.library_summary(DB_PATH),
         "scan": scanner.snapshot(),
         "latest_scan": db.latest_scan(DB_PATH),
     }
+
+
+@app.get("/api/profiles")
+def profiles() -> dict[str, Any]:
+    return {"profiles": list_profiles(), "default": "foobar-ultra-37-48k"}
 
 
 @app.get("/api/library/candidates")
@@ -133,6 +162,33 @@ def candidates(
         raise HTTPException(status_code=400, detail="Invalid above sample rate")
     albums = db.candidate_albums(DB_PATH, cleaned, above)
     return {"rates": cleaned, "above": above, "count": len(albums), "albums": albums}
+
+
+@app.post("/api/convert/review")
+def review_batch(request: BatchReviewRequest) -> dict[str, Any]:
+    cleaned_rates = sorted({r for r in request.rates if 8000 <= r <= 768000})
+    if request.above is not None and not 0 <= request.above <= 768000:
+        raise HTTPException(status_code=400, detail="Invalid above sample rate")
+    try:
+        profile = get_profile(request.profile_id)
+        reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
+        review = build_batch_review(
+            DB_PATH, MUSIC_ROOT, [a.model_dump() for a in request.albums], cleaned_rates,
+            request.above, profile, request.workers, reserve,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    usage = psutil.disk_usage(str(MUSIC_ROOT)) if MUSIC_ROOT.exists() else None
+    free_bytes = usage.free if usage else 0
+    required = review["estimated_peak_temp_bytes"] + reserve
+    review["free_bytes"] = free_bytes
+    review["free_space_ok"] = free_bytes >= required
+    review["required_free_bytes"] = required
+    if not review["free_space_ok"]:
+        review["blockers"].append("Insufficient free space for temp output plus configured reserve")
+    review["can_start"] = bool(review["can_start"] and review["free_space_ok"])
+    return review
 
 
 @app.get("/api/scan/status")
