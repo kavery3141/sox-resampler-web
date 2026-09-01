@@ -138,4 +138,5 @@ if(restoredSourceRateFilters)loadCandidates();
 if(typeof loadUiAddon==='function'){
   loadUiAddon('/static/job-events.js');
   loadUiAddon('/static/mixed-rate-ui.js');
+  loadUiAddon('/static/library-breadcrumbs.js');
 }
