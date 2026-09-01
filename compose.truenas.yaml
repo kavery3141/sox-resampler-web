@@ -1,0 +1,26 @@
+services:
+  sox-resampler-web:
+    image: ghcr.io/kavery3141/sox-resampler-web:1.0.0
+    container_name: sox-resampler-web
+    restart: unless-stopped
+    user: "568:568"
+    ports:
+      - "30058:8080"
+    environment:
+      TZ: America/Indiana/Indianapolis
+      MUSIC_ROOT: /music
+      DATA_ROOT: /data
+      DEFAULT_TARGET_RATE: "48000"
+      DEFAULT_FLAC_COMPRESSION: "4"
+      DEFAULT_WORKERS: "1"
+      MAX_WORKERS: "2"
+    volumes:
+      - /mnt/MainStorage/StorageDataset/Music:/music:rw
+      - /mnt/MainStorage/StorageDataset/sox-resampler:/data:rw
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 90s
