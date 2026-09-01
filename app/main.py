@@ -18,7 +18,9 @@ from .admin import build_admin_router
 from .converter import recover_pending_transactions
 from .issues import build_metadata_issues, filter_issues, render_issues_csv, render_issues_txt
 from .jobs import ConversionJobManager, JobError
-from .profiles import get_profile, list_profiles
+from .profile_store import get_profile as get_stored_profile, list_all_profiles
+from .profiles import apply_profile_override
+from .profiles_api import build_profiles_router
 from .reports import (
     load_job_report,
     render_job_csv,
@@ -30,7 +32,7 @@ from .review import build_batch_review
 from .scanner import LibraryScanner
 from .storage_health import zfs_pool_health
 
-APP_VERSION = "0.5.0-dev"
+APP_VERSION = "0.6.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/music"))
 DATA_ROOT = Path(os.getenv("DATA_ROOT", "/data"))
@@ -58,6 +60,7 @@ class BatchReviewRequest(BaseModel):
     rates: list[int] = Field(default_factory=lambda: [96000, 192000])
     above: int | None = None
     profile_id: str = "foobar-ultra-37-48k"
+    profile_override: dict[str, Any] | None = None
     workers: int = 1
 
 
@@ -101,6 +104,7 @@ app.include_router(
         recovery_status=lambda: recovery_status,
     )
 )
+app.include_router(build_profiles_router(DB_PATH))
 
 
 def _daily_scan() -> None:
@@ -114,7 +118,8 @@ def _review(request: BatchReviewRequest) -> dict[str, Any]:
     if request.above is not None and not 0 <= request.above <= 768000:
         raise HTTPException(status_code=400, detail="Invalid above sample rate")
     try:
-        profile = get_profile(request.profile_id)
+        stored_profile = get_stored_profile(DB_PATH, request.profile_id)
+        profile = apply_profile_override(stored_profile, request.profile_override)
         reserve = int(db.get_setting(DB_PATH, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
         review = build_batch_review(
             DB_PATH,
@@ -263,7 +268,10 @@ def status() -> dict[str, Any]:
 
 @app.get("/api/profiles")
 def profiles() -> dict[str, Any]:
-    return {"profiles": list_profiles(), "default": "foobar-ultra-37-48k"}
+    return {
+        "profiles": [profile.to_dict() for profile in list_all_profiles(DB_PATH)],
+        "default": "foobar-ultra-37-48k",
+    }
 
 
 @app.get("/api/library/candidates")
