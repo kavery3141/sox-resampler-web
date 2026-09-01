@@ -3,9 +3,16 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app import db
-from app.admin import _job_runtime_times, _normalize_exclusions, _preview_exclusions
+from app.admin import (
+    _job_runtime_times,
+    _normalize_exclusions,
+    _preview_exclusions,
+    _recovery_summary,
+    build_admin_router,
+)
 from app.jobs import ensure_tables
 
 
@@ -39,6 +46,69 @@ class AdminSettingsTests(unittest.TestCase):
             result = _preview_exclusions(root, exact, globs)
             self.assertEqual(result["folders"], 1)
             self.assertEqual(result["flac_files"], 2)
+
+    def test_recovery_summary_marks_manual_attention_and_errors_as_blocking(self) -> None:
+        result = _recovery_summary(
+            [
+                {"action": "finished_verified_cleanup"},
+                {"action": "manual_attention"},
+                {"action": "recovery_error: permission denied"},
+            ]
+        )
+        self.assertEqual(result["items"], 3)
+        self.assertEqual(result["automatic_actions"], 1)
+        self.assertEqual(result["manual_attention"], 1)
+        self.assertEqual(result["errors"], 1)
+        self.assertTrue(result["blocked"])
+
+    def test_manual_recovery_recheck_replaces_stale_runtime_status(self) -> None:
+        class IdleScanner:
+            def snapshot(self):
+                return {"running": False}
+
+        class IdleJobs:
+            def is_running(self):
+                return False
+
+            def active_job_id(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            music = root / "music"
+            data_root = root / "data"
+            music.mkdir()
+            data_root.mkdir()
+            status = [{"action": "manual_attention", "source": "/old/problem.flac"}]
+            router = build_admin_router(
+                db_path=data_root / "test.db",
+                music_root=music,
+                data_root=data_root,
+                timezone="America/Indiana/Indianapolis",
+                app_version="test",
+                scanner=IdleScanner(),
+                job_manager=IdleJobs(),
+                scan_async=lambda mode: {"mode": mode},
+                recovery_status=lambda: status,
+            )
+            endpoint = next(
+                route.endpoint
+                for route in router.routes
+                if getattr(route, "path", None) == "/api/maintenance/recovery/recheck"
+            )
+            transaction = [{"action": "cleared_prepared_journal", "source": "/music/a.flac"}]
+            orphan = [{"action": "manual_attention", "source": "/music/b.flac", "reason": "ambiguous"}]
+            with (
+                patch("app.admin.recover_pending_transactions", return_value=transaction),
+                patch("app.admin.cleanup_orphan_temps", return_value=orphan),
+                patch("app.admin.record_event"),
+            ):
+                result = endpoint()
+
+            self.assertEqual(status, transaction + orphan)
+            self.assertFalse(result["safe_for_conversion"])
+            self.assertEqual(result["summary"]["manual_attention"], 1)
+            self.assertEqual(result["summary"]["automatic_actions"], 1)
 
     def test_job_runtime_times_union_parallel_files_and_preserve_idle_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
