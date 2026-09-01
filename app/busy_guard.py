@@ -12,6 +12,10 @@ class SourceBusyError(RuntimeError):
     pass
 
 
+class SourceAccessError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class BusyGuardState:
     supported: bool
@@ -35,7 +39,11 @@ def source_read_guard(path: Path) -> Iterator[BusyGuardState]:
     filesystem that does not support flock, conversion continues with ``supported=False`` and the
     existing source-identity/revalidation safeguards remain authoritative.
     """
-    handle = path.open("rb")
+    try:
+        handle = path.open("rb")
+    except OSError as exc:
+        raise SourceAccessError(f"Source unavailable before conversion: {path}: {exc}") from exc
+
     locked = False
     try:
         try:
