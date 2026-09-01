@@ -146,11 +146,18 @@ class JobMaintenanceTest(unittest.TestCase):
     def test_headroom_retry_requires_more_attenuation_than_original_snapshot(self) -> None:
         stamp = "2026-09-01T10:00:00-04:00"
         job_id = self._job(created=stamp, finished=stamp, status="completed", error="clipping")
+        snapshot = FOOBAR_ULTRA_37.to_dict()
+        snapshot["headroom_db"] = -1.0
+        with db.session(self.db_path) as conn:
+            conn.execute(
+                "UPDATE conversion_jobs SET profile_json=? WHERE id=?",
+                (json.dumps(snapshot), job_id),
+            )
         path = "/music/Artist/Album/01.flac"
         self._track(path)
         self._file(job_id, path, "failed", "Output peak exceeds full scale: 1.000100000", 0)
         with self.assertRaisesRegex(RetrySpecError, "must add attenuation"):
-            clipping_retry_spec(self.db_path, job_id, headroom_db=0.0)
+            clipping_retry_spec(self.db_path, job_id, headroom_db=-0.5)
 
     def test_non_clipping_failures_are_not_eligible_for_headroom_retry(self) -> None:
         stamp = "2026-09-01T10:00:00-04:00"
