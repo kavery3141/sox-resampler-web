@@ -194,4 +194,5 @@ loadUiAddon('/static/live-stats.js');
 loadUiAddon('/static/advanced-presets.js');
 loadUiAddon('/static/batch-editor.js');
 loadUiAddon('/static/retry-failed.js');
+loadUiAddon('/static/retry-headroom.js');
 loadUiAddon('/static/maintenance-history.js');
