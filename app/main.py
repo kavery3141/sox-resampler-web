@@ -39,6 +39,11 @@ from .reports import (
 from .review import build_batch_review
 from .scanner import LibraryScanner
 from .storage_health import zfs_pool_health
+from .settings_extras import (
+    build_settings_extras_router,
+    configure_daily_scan_job,
+    schedule_deferred_daily_scan,
+)
 from .temp_cleanup import cleanup_orphan_temps
 
 APP_VERSION = "0.7.0-dev"
@@ -123,6 +128,16 @@ app.include_router(
     )
 )
 app.include_router(build_profiles_router(DB_PATH))
+app.include_router(
+    build_settings_extras_router(
+        db_path=DB_PATH,
+        timezone=TIMEZONE,
+        scheduler=scheduler,
+        daily_scan=lambda: _daily_scan(),
+        scanner=scanner,
+        job_manager=job_manager,
+    )
+)
 
 
 def _refresh_recovery_status(*, log_events: bool) -> list[dict[str, Any]]:
@@ -152,6 +167,13 @@ def _refresh_recovery_status(*, log_events: bool) -> list[dict[str, Any]]:
 def _daily_scan() -> None:
     # Discovery/maintenance only. Conversion is intentionally never launched by a schedule.
     if scanner.snapshot()["running"] or job_manager.is_running():
+        next_attempt = schedule_deferred_daily_scan(scheduler, lambda: _daily_scan(), minutes=30)
+        record_event(
+            DB_PATH,
+            job_manager._now(),
+            "daily_scan_deferred",
+            {"reason": "conversion_or_scan_active", "next_attempt": next_attempt},
+        )
         return
     _refresh_recovery_status(log_events=True)
     retention = prune_job_history(DB_PATH, TIMEZONE)
@@ -317,17 +339,8 @@ def startup() -> None:
     retention = prune_job_history(DB_PATH, TIMEZONE)
     if retention["deleted_jobs"]:
         record_event(DB_PATH, job_manager._now(), "history_retention_prune", retention)
+    configure_daily_scan_job(scheduler, lambda: _daily_scan(), DB_PATH)
     if not scheduler.running:
-        scheduler.add_job(
-            _daily_scan,
-            "cron",
-            hour=10,
-            minute=0,
-            id="daily-library-scan",
-            replace_existing=True,
-            coalesce=True,
-            max_instances=1,
-        )
         scheduler.start()
 
 
