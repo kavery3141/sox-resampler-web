@@ -20,6 +20,21 @@ function maintenanceScanInstall(){
   $('maintenanceResumeScan').onclick=maintenanceScanResume;
 }
 
+function maintenanceRecoveryInstall(){
+  if($('maintenanceRecoveryCard'))return;
+  maintenanceScanInstall();
+  const card=document.createElement('section');
+  card.id='maintenanceRecoveryCard';card.className='card';card.style.marginTop='14px';
+  card.innerHTML=`
+    <div class="sectionTitle"><div><h3 style="margin:0">Recovery Safety</h3><div class="muted">Recheck interrupted replacement journals and hidden app temp files after manual repair. Recheck never starts conversion and never promotes a temp file into the library.</div></div><span class="spacer"></span><button id="maintenanceRecheckRecovery" class="primary">Recheck Recovery State</button></div>
+    <div id="maintenanceRecoveryMetrics" class="summary maintenanceHistoryMetrics"></div>
+    <div id="maintenanceRecoveryNotice" class="notice hidden"></div>
+    <div id="maintenanceRecoveryItems" class="maintenanceRecoveryItems"></div>`;
+  const scanCard=$('maintenanceScanCard');
+  if(scanCard)scanCard.insertAdjacentElement('afterend',card);else $('maintenanceView').appendChild(card);
+  $('maintenanceRecheckRecovery').onclick=maintenanceRecoveryRecheck;
+}
+
 function maintenanceHistoryInstall(){
   if($('maintenanceHistoryCard'))return;
   const cards=[...document.querySelectorAll('#maintenanceView > .card')];
@@ -41,6 +56,7 @@ function maintenanceEventDetail(event){
   if(event.event_type==='history_retention_prune')return `${detail.deleted_jobs||0} clean old jobs pruned`;
   if(event.event_type==='transaction_recovery')return detail.action||'transaction recovery check';
   if(event.event_type==='orphan_temp_cleanup')return detail.action||'orphan temp check';
+  if(event.event_type==='manual_recovery_recheck')return detail.blocked?`${detail.manual_attention||0} manual, ${detail.errors||0} errors remain`:'recovery state clear';
   if(event.event_type==='scan_pause_requested')return `scan ${detail.scan_id||''} pause requested`.trim();
   if(event.event_type==='scan_resume_requested')return `resuming scan ${detail.resume_of_scan_id||''}`.trim();
   if(event.event_type==='storage_settings_changed')return 'storage safety settings changed';
@@ -63,8 +79,27 @@ function maintenanceScanRender(data){
   if(maintenanceScanPoll){clearTimeout(maintenanceScanPoll);maintenanceScanPoll=null}
   if(active)maintenanceScanPoll=setTimeout(()=>maintenanceHistoryLoad(),1500);
 }
+function maintenanceRecoveryRender(data){
+  maintenanceRecoveryInstall();
+  const summary=data.recovery_summary||{};
+  const outcomes=data.transaction_recovery||[];
+  const blocked=Boolean(summary.blocked);
+  const busy=Boolean(data.conversion_running)||Boolean(data.scan?.running);
+  $('maintenanceRecheckRecovery').disabled=busy;
+  $('maintenanceRecheckRecovery').title=busy?'Recovery recheck waits until conversion and scanning are idle':'';
+  $('maintenanceRecoveryMetrics').innerHTML=`<div class="card metric"><span>Conversion safety</span><strong>${blocked?'Blocked':'Clear'}</strong></div><div class="card metric"><span>Current records</span><strong>${Number(summary.items||0).toLocaleString()}</strong></div><div class="card metric"><span>Manual attention</span><strong>${Number(summary.manual_attention||0).toLocaleString()}</strong></div><div class="card metric"><span>Recovery errors</span><strong>${Number(summary.errors||0).toLocaleString()}</strong></div><div class="card metric"><span>Automatic actions</span><strong>${Number(summary.automatic_actions||0).toLocaleString()}</strong></div>`;
+  const area=$('maintenanceRecoveryItems');
+  if(!outcomes.length){
+    area.innerHTML='<div class="notice good maintenanceRecoveryState">No outstanding transaction or orphan-temp recovery records are present.</div>';
+    return;
+  }
+  const blockers=outcomes.filter(item=>item.action==='manual_attention'||String(item.action||'').startsWith('recovery_error'));
+  const shown=blockers.length?blockers:outcomes;
+  area.innerHTML=`<div class="notice ${blocked?'bad':'good'} maintenanceRecoveryState">${blocked?'Conversion remains blocked until the items below are resolved and Recovery State is rechecked.':'The latest recovery pass completed without a blocking condition.'}</div><div class="maintenanceRecoveryList">${shown.map(item=>`<div class="maintenanceRecoveryItem"><strong>${esc(String(item.action||'unknown').replaceAll('_',' '))}</strong><code>${esc(item.source||item.temp||'')}</code>${item.temp?`<div class="muted">Temp: <code>${esc(item.temp)}</code></div>`:''}${item.reason?`<div class="muted">${esc(item.reason)}</div>`:''}</div>`).join('')}</div>`;
+}
 function maintenanceHistoryRender(data){
   maintenanceScanRender(data);
+  maintenanceRecoveryRender(data);
   maintenanceHistoryInstall();
   const history=data.history||{};const logs=data.logs||{};
   $('maintenanceHistoryMetrics').innerHTML=`<div class="card metric"><span>Total jobs</span><strong>${Number(history.total_jobs||0).toLocaleString()}</strong></div><div class="card metric"><span>Terminal</span><strong>${Number(history.terminal_jobs||0).toLocaleString()}</strong></div><div class="card metric"><span>Protected errors</span><strong>${Number(history.protected_error_jobs||0).toLocaleString()}</strong></div><div class="card metric"><span>Resumable</span><strong>${Number(history.resumable_jobs||0).toLocaleString()}</strong></div><div class="card metric"><span>Retention</span><strong>${Number(history.retention_days||180)} days</strong></div>`;
@@ -74,7 +109,7 @@ function maintenanceHistoryRender(data){
   $('maintenanceEvents').innerHTML=events.length?events.map(event=>`<div class="maintenanceEvent"><span>${esc(fmtTime(event.occurred_at))}</span><strong>${esc(String(event.event_type||'').replaceAll('_',' '))}</strong><span>${esc(maintenanceEventDetail(event))}</span></div>`).join(''):'No maintenance events recorded yet.';
 }
 async function maintenanceHistoryLoad(){
-  maintenanceScanInstall();maintenanceHistoryInstall();
+  maintenanceScanInstall();maintenanceRecoveryInstall();maintenanceHistoryInstall();
   try{
     const response=await fetch('/api/maintenance/status');
     const data=await response.json();if(!response.ok)throw new Error(data.detail||'Unable to load maintenance history');
@@ -97,6 +132,20 @@ async function maintenanceScanResume(){
     setTimeout(()=>maintenanceHistoryLoad(),300);
   }catch(error){notice('maintenanceScanNotice',error.message,'bad')}
 }
+async function maintenanceRecoveryRecheck(){
+  const button=$('maintenanceRecheckRecovery');
+  button.disabled=true;
+  const previous=button.textContent;
+  button.textContent='Rechecking…';
+  try{
+    const response=await fetch('/api/maintenance/recovery/recheck',{method:'POST'});
+    const data=await response.json();if(!response.ok)throw new Error(data.detail||'Unable to recheck recovery state');
+    const summary=data.summary||{};
+    notice('maintenanceRecoveryNotice',data.safe_for_conversion?'Recovery recheck completed. No recovery blocker remains.':`Recovery recheck completed, but ${Number(summary.manual_attention||0)} manual-attention item(s) and ${Number(summary.errors||0)} recovery error(s) remain.` ,data.safe_for_conversion?'good':'bad');
+    await maintenanceHistoryLoad();await loadStatus();
+  }catch(error){notice('maintenanceRecoveryNotice',error.message,'bad')}
+  finally{button.textContent=previous;button.disabled=false}
+}
 async function maintenanceHistoryClear(){
   const message='Clear all terminal conversion history, including retained failure/error records? Queued, paused and interrupted jobs will be preserved.';
   if(!confirm(message))return;
@@ -108,7 +157,7 @@ async function maintenanceHistoryClear(){
   }catch(error){notice('maintenanceHistoryNotice',error.message,'bad')}
 }
 
-maintenanceScanInstall();maintenanceHistoryInstall();
+maintenanceScanInstall();maintenanceRecoveryInstall();maintenanceHistoryInstall();
 const maintenanceHistoryBaseLoad=loadMaintenance;
 loadMaintenance=async function(){await maintenanceHistoryBaseLoad();await maintenanceHistoryLoad()};
 $('refreshMaintenance').onclick=loadMaintenance;
