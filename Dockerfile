@@ -19,6 +19,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+RUN python -m compileall -q app
 
 RUN mkdir -p /data \
     && chown -R 568:568 /app /data
