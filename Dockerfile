@@ -37,7 +37,8 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=America/Indiana/Indianapolis \
-    SOX_ULTRA_BIN=/opt/sox-ultra/bin/sox
+    SOX_ULTRA_BIN=/opt/sox-ultra/bin/sox \
+    ZFS_POOL=MainStorage
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -47,6 +48,7 @@ RUN apt-get update \
        curl \
        tini \
        util-linux \
+       zfsutils-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=sox-ultra-builder /stage/opt/sox-ultra /opt/sox-ultra
