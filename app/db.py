@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -98,6 +98,22 @@ def init(path: Path) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS album_art (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folder TEXT NOT NULL UNIQUE,
+                source_kind TEXT NOT NULL,
+                source_path TEXT,
+                source_signature TEXT,
+                cache_path TEXT,
+                cache_sha256 TEXT,
+                width INTEGER,
+                height INTEGER,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                error_text TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_album_art_status ON album_art(status);
             """
         )
         db.execute(
@@ -157,9 +173,9 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
 
     sql = f"""
     SELECT
-      COALESCE(albumartist,'') albumartist,
-      COALESCE(album,'') album,
-      folder,
+      COALESCE(tracks.albumartist,'') albumartist,
+      COALESCE(tracks.album,'') album,
+      tracks.folder folder,
       COUNT(*) total_tracks,
       SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END) matching_tracks,
       SUM(CASE WHEN NOT ({where}) THEN 1 ELSE 0 END) untouched_tracks,
@@ -178,11 +194,13 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
       MIN(first_seen) first_seen,
       SUM(CASE WHEN replaygain_track_gain IS NULL OR replaygain_track_peak IS NULL
                 OR replaygain_album_gain IS NULL OR replaygain_album_peak IS NULL THEN 1 ELSE 0 END) replaygain_incomplete,
-      SUM(CASE WHEN channels > 2 THEN 1 ELSE 0 END) multichannel_tracks
+      SUM(CASE WHEN channels > 2 THEN 1 ELSE 0 END) multichannel_tracks,
+      MAX(CASE WHEN album_art.status='ready' THEN album_art.id END) artwork_id
     FROM tracks
-    GROUP BY albumartist, album, folder
+    LEFT JOIN album_art ON album_art.folder=tracks.folder
+    GROUP BY tracks.albumartist, tracks.album, tracks.folder
     HAVING matching_tracks > 0
-    ORDER BY albumartist COLLATE NOCASE, album COLLATE NOCASE, folder COLLATE NOCASE
+    ORDER BY tracks.albumartist COLLATE NOCASE, tracks.album COLLATE NOCASE, tracks.folder COLLATE NOCASE
     """
 
     # The rate predicate is expanded independently in seven SELECT expressions above. Each
@@ -236,4 +254,6 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
             0,
             int(row["matching_bytes"] or 0) - row["estimated_output_48k_bytes"],
         )
+        artwork_id = row.get("artwork_id")
+        row["artwork_url"] = f"/api/artwork/albums/{int(artwork_id)}" if artwork_id is not None else None
     return rows
