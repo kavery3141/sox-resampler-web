@@ -52,7 +52,8 @@ function liveByteCounts(j){
   const failed=Number(bytes.failed||0);
   const pending=Number(bytes.pending||0);
   const running=Number(bytes.running||0);
-  return {completed,failed,processed:completed+failed,remaining:pending+running};
+  const deferred=Number(bytes.deferred||0);
+  return {completed,failed,deferred,processed:completed+failed,remaining:pending+running+deferred};
 }
 function liveReset(j){
   liveStatsState.jobId=Number(j.id);
@@ -139,6 +140,38 @@ function updateCurrentFileTelemetry(j){
     card.appendChild(line);
   });
 }
+function ensureDeferredUi(){
+  const stats=document.querySelector('#activeJob .jobStats');
+  if(stats&&!document.getElementById('jobDeferredStat')){
+    const stat=document.createElement('div');
+    stat.id='jobDeferredStat';
+    stat.className='jobStat';
+    stat.innerHTML='<span>Deferred busy</span><strong id="jobDeferred">0</strong>';
+    stats.appendChild(stat);
+  }
+  let area=document.getElementById('jobDeferredArea');
+  if(!area){
+    const failures=document.getElementById('jobFailureArea');
+    if(!failures)return null;
+    area=document.createElement('div');
+    area.id='jobDeferredArea';
+    area.className='currentFiles hidden';
+    area.innerHTML='<strong>Deferred busy files</strong><div class="muted" style="margin-top:4px">Best-effort advisory-lock detection deferred these files. Each gets one retry at the end of the batch; the original remains untouched while deferred.</div><div id="jobDeferredList"></div>';
+    failures.parentNode.insertBefore(area,failures);
+  }
+  return area;
+}
+function updateDeferredUi(j){
+  const area=ensureDeferredUi();
+  const count=Number(j.counts?.deferred||0);
+  const counter=document.getElementById('jobDeferred');
+  if(counter)counter.textContent=String(count);
+  if(!area)return;
+  const files=j.deferred_files||[];
+  area.classList.toggle('hidden',count===0&&files.length===0);
+  const list=document.getElementById('jobDeferredList');
+  if(list)list.innerHTML=files.map(f=>`<div class="currentFile"><strong>${esc(basename(f.path))}</strong><div class="muted">${esc(f.albumartist)} — ${esc(f.album)}</div><div class="muted">Waiting for the one end-of-batch retry</div></div>`).join('');
+}
 function resetRuntimeSamples(jobId){
   liveRuntimeState.jobId=Number(jobId);
   liveRuntimeState.previous=null;
@@ -198,9 +231,10 @@ function updateLiveStats(j){
   $('jobFinishEstimate').textContent=j.status==='completed'?(j.finished_at?fmtTime(j.finished_at):'Done'):paused?'Unavailable':eta===null?'Learning…':liveFinish(eta);
   const elapsed=liveElapsed(j);$('jobWallTime').textContent=elapsed===null?'—':liveSeconds(elapsed);
   $('jobTelemetryNote').textContent=active
-    ?(estimate.bytesPerSecond?'Rolling estimate from completed files':'Learning after the next completed file')
+    ?(bytes.deferred>0?`${bytes.deferred>0?'Deferred busy files remain · ':''}${estimate.bytesPerSecond?'rolling estimate from completed files':'learning after the next completed file'}`:(estimate.bytesPerSecond?'Rolling estimate from completed files':'Learning after the next completed file'))
     :(paused?'ETA is unavailable while paused':'Final job statistics');
   updateCurrentFileTelemetry(j);
+  updateDeferredUi(j);
   updateRuntimeMetrics(j);
 }
 
