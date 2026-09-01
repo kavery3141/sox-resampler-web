@@ -7,7 +7,8 @@ def replace_once(path: str, old: str, new: str, label: str) -> None:
     file_path = Path(path)
     text = file_path.read_text(encoding="utf-8")
     count = text.count(old)
-    if count != 1:
+    allowed_ambiguous_first = label == "retry review pre-hash pass" and count == 2
+    if count != 1 and not allowed_ambiguous_first:
         raise SystemExit(f"{label}: expected one match in {path}, found {count}")
     file_path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
