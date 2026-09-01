@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
@@ -16,6 +18,9 @@ from .profiles import get_profile
 
 class JobError(RuntimeError):
     pass
+
+
+DEFAULT_RESERVE_BYTES = 10 * 1024**3
 
 
 def ensure_tables(db_path: Path) -> None:
@@ -100,6 +105,26 @@ class ConversionJobManager:
         with self._lock:
             return self._active_job_id if self.is_running() else None
 
+    def _runtime_gate(self, required_temp_bytes: int) -> str | None:
+        """Return a reason to pause before starting more file work, or None when safe."""
+        if bool(db.get_setting(self.db_path, "read_only_mode", False)):
+            return "Read-only Scan Mode was enabled; conversion paused before the next file"
+        if not self.music_root.exists():
+            return "Music dataset is unavailable; conversion paused before the next file"
+        if not os.access(self.music_root, os.R_OK | os.W_OK):
+            return "Music dataset is not readable/writable; conversion paused before the next file"
+        try:
+            free_bytes = shutil.disk_usage(self.music_root).free
+        except OSError as exc:
+            return f"Unable to verify free space ({exc}); conversion paused before the next file"
+        reserve = int(db.get_setting(self.db_path, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES))
+        if free_bytes < reserve + max(0, int(required_temp_bytes)):
+            return (
+                "Free space fell below the configured reserve plus estimated temp requirement; "
+                "conversion paused before the next file"
+            )
+        return None
+
     def create_job(
         self,
         review: dict[str, Any],
@@ -151,6 +176,9 @@ class ConversionJobManager:
         with self._lock:
             if self.is_running():
                 raise JobError(f"Conversion job {self._active_job_id} is already running")
+            gate = self._runtime_gate(0)
+            if gate:
+                raise JobError(gate)
             with db.session(self.db_path) as conn:
                 job = conn.execute("SELECT * FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()
                 if not job:
@@ -159,7 +187,7 @@ class ConversionJobManager:
                     raise JobError(f"Job cannot start from status {job['status']}")
                 conn.execute(
                     "UPDATE conversion_jobs SET status='running',started_at=COALESCE(started_at,?),"
-                    "finished_at=NULL,pause_requested=0,stop_after_album=0,cancel_requested=0 WHERE id=?",
+                    "finished_at=NULL,pause_requested=0,stop_after_album=0,cancel_requested=0,error_text=NULL WHERE id=?",
                     (self._now(), job_id),
                 )
             self._active_job_id = job_id
@@ -180,7 +208,16 @@ class ConversionJobManager:
             "cancel": bool(row["cancel_requested"]),
         }
 
-    def _run_file(self, job_id: int, file_id: int, path: str, profile_id: str) -> dict[str, Any]:
+    def _run_file(self, job_id: int, file_id: int, path: str, profile_id: str, expected_bytes: int) -> dict[str, Any]:
+        source = Path(path)
+        try:
+            current_size = source.stat().st_size
+        except OSError as exc:
+            raise JobError(f"Source unavailable before conversion: {source}: {exc}") from exc
+        if current_size != int(expected_bytes):
+            raise JobError(
+                f"Source size changed after batch review ({expected_bytes} -> {current_size}); rescan/review required: {source}"
+            )
         started = self._now()
         with db.session(self.db_path) as conn:
             conn.execute(
@@ -188,7 +225,7 @@ class ConversionJobManager:
                 (started, file_id),
             )
         profile = get_profile(profile_id)
-        result = convert_file(Path(path), profile)
+        result = convert_file(source, profile)
         payload = asdict(result)
         finished = self._now()
         with db.session(self.db_path) as conn:
@@ -214,7 +251,6 @@ class ConversionJobManager:
                 if not job:
                     raise JobError("Job disappeared")
                 profile_id = str(job["profile_id"])
-                workers = int(job["workers"])
                 album_indices = [
                     r["album_index"] for r in conn.execute(
                         "SELECT DISTINCT album_index FROM conversion_files WHERE job_id=? ORDER BY album_index",
@@ -234,7 +270,7 @@ class ConversionJobManager:
                 with db.session(self.db_path) as conn:
                     files = conn.execute(
                         """
-                        SELECT id,path FROM conversion_files
+                        SELECT id,path,source_bytes FROM conversion_files
                         WHERE job_id=? AND album_index=? AND status='pending'
                         ORDER BY file_index
                         """,
@@ -257,17 +293,26 @@ class ConversionJobManager:
                             "SELECT workers FROM conversion_jobs WHERE id=?", (job_id,)
                         ).fetchone()["workers"])
                     wave = files[cursor: cursor + max(1, min(2, current_workers))]
+                    required_temp = sum(int(r["source_bytes"]) for r in wave)
+                    gate = self._runtime_gate(required_temp)
+                    if gate:
+                        terminal_status = "paused"
+                        terminal_error = gate
+                        break
                     cursor += len(wave)
                     with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix=f"job-{job_id}") as pool:
-                        futures = [pool.submit(self._run_file, job_id, r["id"], r["path"], profile_id) for r in wave]
+                        futures = [
+                            pool.submit(
+                                self._run_file, job_id, r["id"], r["path"], profile_id, int(r["source_bytes"])
+                            )
+                            for r in wave
+                        ]
                         for future in as_completed(futures):
                             try:
                                 future.result()
                             except Exception as exc:
-                                # A worker-level exception is recorded as a failed file when possible;
-                                # it must not abort other albums.
                                 terminal_error = str(exc)
-                    # Control requests are honored only between active files/waves.
+                    # Control requests and runtime storage safeguards are honored between active files/waves.
                 if terminal_status in ("paused", "cancelled"):
                     break
                 if self._controls(job_id)["stop_album"]:
