@@ -46,6 +46,7 @@ from .settings_extras import (
     schedule_deferred_daily_scan,
 )
 from .temp_cleanup import cleanup_orphan_temps
+from .update_check import build_update_router
 
 APP_VERSION = "0.7.0-dev"
 TIMEZONE = os.getenv("TZ", "America/Indiana/Indianapolis")
@@ -129,6 +130,7 @@ app.include_router(
     )
 )
 app.include_router(build_profiles_router(DB_PATH))
+app.include_router(build_update_router(APP_VERSION))
 app.include_router(
     build_settings_extras_router(
         db_path=DB_PATH,
