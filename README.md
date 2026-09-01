@@ -59,6 +59,8 @@ New destructive conversion work fails closed if the configured ZFS pool is not c
 
 Conversion CPU throttling is optional and disabled by default. When enabled in Settings, each SoX worker receives an independent `cpulimit` controller targeting that worker's actual process ID at the configured 10–100% ceiling. Changes take effect when the next file starts, do not alter DSP settings, and never initiate conversion.
 
+Library scans are also background-friendly: the dedicated scanner worker requests Linux nice level 10 plus best-effort `ionice` level 7. Those scheduler hints are advisory and a platform that cannot apply them still performs the discovery-only scan safely; they never change conversion behavior or concurrency.
+
 ## Branding
 
 Approved application icon: `assets/icon.png`.
