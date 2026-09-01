@@ -118,30 +118,31 @@ class CandidateAlbumsTests(unittest.TestCase):
             self.assertEqual(rows[0]["source_rates"], [88200, 176400])
             self.assertEqual(rows[0]["untouched_rates"], [])
 
-    def test_same_album_name_in_two_folders_stays_two_physical_candidates(self) -> None:
+    def test_album_identity_spans_multiple_physical_folders(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "library.db"
             db.init(db_path)
-            for folder, suffix in (
-                ("/music/Test Artist/Test Album", "a"),
-                ("/music/Test Artist/Test Album Deluxe", "b"),
-            ):
+            folders = (
+                "/music/Test Artist/Test Album/Disc 1",
+                "/music/Test Artist/Test Album/Disc 2",
+            )
+            for index, folder in enumerate(folders, start=1):
                 self._insert_track(
                     db_path,
-                    path=f"{folder}/01-{suffix}.flac",
+                    path=f"{folder}/01.flac",
                     folder=folder,
                     rate=96000,
                     size=1000,
-                    tracknumber="1",
+                    tracknumber=str(index),
                 )
 
             rows = db.candidate_albums(db_path, [96000], above=None)
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(
-                {row["folder"] for row in rows},
-                {"/music/Test Artist/Test Album", "/music/Test Artist/Test Album Deluxe"},
-            )
-            self.assertTrue(all(row["matching_tracks"] == 1 for row in rows))
+            self.assertEqual(len(rows), 1)
+            album = rows[0]
+            self.assertEqual(album["matching_tracks"], 2)
+            self.assertEqual(album["total_tracks"], 2)
+            self.assertEqual(album["folder_count"], 2)
+            self.assertEqual(album["folders"], sorted(folders, key=str.casefold))
 
     def test_inconsistent_critical_tag_in_folder_blocks_candidate_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
