@@ -159,7 +159,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
     SELECT
       COALESCE(albumartist,'') albumartist,
       COALESCE(album,'') album,
-      MIN(folder) folder,
+      folder,
       COUNT(*) total_tracks,
       SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END) matching_tracks,
       SUM(CASE WHEN NOT ({where}) THEN 1 ELSE 0 END) untouched_tracks,
@@ -170,6 +170,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
              ELSE 0 END
       ) estimated_output_48k_bytes,
       GROUP_CONCAT(DISTINCT CASE WHEN ({where}) THEN sample_rate END) source_rates,
+      GROUP_CONCAT(DISTINCT CASE WHEN NOT ({where}) THEN sample_rate END) untouched_rates,
       GROUP_CONCAT(DISTINCT CASE WHEN ({where}) THEN bits_per_sample END) bit_depths,
       GROUP_CONCAT(DISTINCT channels) channels,
       GROUP_CONCAT(DISTINCT releasetype) releasetypes,
@@ -177,38 +178,48 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
       MIN(first_seen) first_seen,
       SUM(CASE WHEN replaygain_track_gain IS NULL OR replaygain_track_peak IS NULL
                 OR replaygain_album_gain IS NULL OR replaygain_album_peak IS NULL THEN 1 ELSE 0 END) replaygain_incomplete,
-      SUM(CASE WHEN channels > 2 THEN 1 ELSE 0 END) multichannel_tracks,
-      SUM(CASE WHEN albumartist IS NULL OR TRIM(albumartist)='' THEN 1 ELSE 0 END) missing_albumartist,
-      SUM(CASE WHEN album IS NULL OR TRIM(album)='' THEN 1 ELSE 0 END) missing_album,
-      SUM(CASE WHEN releasetype IS NULL OR TRIM(releasetype)='' THEN 1 ELSE 0 END) missing_releasetype,
-      SUM(CASE WHEN musicbrainz_albumid IS NULL OR TRIM(musicbrainz_albumid)='' THEN 1 ELSE 0 END) missing_mbid,
-      COUNT(DISTINCT NULLIF(TRIM(albumartist),'')) albumartist_values,
-      COUNT(DISTINCT NULLIF(TRIM(album),'')) album_values,
-      COUNT(DISTINCT NULLIF(TRIM(releasetype),'')) releasetype_values,
-      COUNT(DISTINCT NULLIF(TRIM(musicbrainz_albumid),'')) mbid_values
+      SUM(CASE WHEN channels > 2 THEN 1 ELSE 0 END) multichannel_tracks
     FROM tracks
-    GROUP BY albumartist, album
+    GROUP BY albumartist, album, folder
     HAVING matching_tracks > 0
-    ORDER BY albumartist COLLATE NOCASE, album COLLATE NOCASE
+    ORDER BY albumartist COLLATE NOCASE, album COLLATE NOCASE, folder COLLATE NOCASE
     """
 
-    # The rate predicate is expanded independently in six SELECT expressions above. Each
+    # The rate predicate is expanded independently in seven SELECT expressions above. Each
     # expansion has its own positional SQLite placeholders, so the argument list must be repeated
     # the same number of times.
-    qargs = args * 6
+    qargs = args * 7
     with session(path) as db:
         rows = [dict(r) for r in db.execute(sql, qargs).fetchall()]
+        folder_health_rows = db.execute(
+            """
+            SELECT
+              folder,
+              SUM(CASE WHEN albumartist IS NULL OR TRIM(albumartist)='' THEN 1 ELSE 0 END) missing_albumartist,
+              SUM(CASE WHEN album IS NULL OR TRIM(album)='' THEN 1 ELSE 0 END) missing_album,
+              SUM(CASE WHEN releasetype IS NULL OR TRIM(releasetype)='' THEN 1 ELSE 0 END) missing_releasetype,
+              SUM(CASE WHEN musicbrainz_albumid IS NULL OR TRIM(musicbrainz_albumid)='' THEN 1 ELSE 0 END) missing_mbid,
+              COUNT(DISTINCT NULLIF(TRIM(albumartist),'')) albumartist_values,
+              COUNT(DISTINCT NULLIF(TRIM(album),'')) album_values,
+              COUNT(DISTINCT NULLIF(TRIM(releasetype),'')) releasetype_values,
+              COUNT(DISTINCT NULLIF(TRIM(musicbrainz_albumid),'')) mbid_values
+            FROM tracks
+            GROUP BY folder
+            """
+        ).fetchall()
 
+    folder_health = {str(row["folder"]): dict(row) for row in folder_health_rows}
     for row in rows:
         blockers: list[str] = []
         warnings: list[str] = []
-        if row["missing_albumartist"] or row["albumartist_values"] != 1:
+        health = folder_health.get(str(row["folder"]), {})
+        if health.get("missing_albumartist") or health.get("albumartist_values") != 1:
             blockers.append("ALBUMARTIST missing or inconsistent")
-        if row["missing_album"] or row["album_values"] != 1:
+        if health.get("missing_album") or health.get("album_values") != 1:
             blockers.append("ALBUM missing or inconsistent")
-        if row["missing_releasetype"] or row["releasetype_values"] != 1:
+        if health.get("missing_releasetype") or health.get("releasetype_values") != 1:
             blockers.append("RELEASETYPE missing or inconsistent")
-        if row["missing_mbid"] or row["mbid_values"] != 1:
+        if health.get("missing_mbid") or health.get("mbid_values") != 1:
             blockers.append("MUSICBRAINZ_ALBUMID missing or inconsistent")
         if row["multichannel_tracks"]:
             blockers.append("Multichannel FLAC requires review")
@@ -218,6 +229,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
         row["warnings"] = warnings
         row["selectable"] = not blockers
         row["source_rates"] = sorted(int(x) for x in (row["source_rates"] or "").split(",") if x)
+        row["untouched_rates"] = sorted(int(x) for x in (row["untouched_rates"] or "").split(",") if x)
         row["bit_depths"] = sorted(int(x) for x in (row["bit_depths"] or "").split(",") if x)
         row["estimated_output_48k_bytes"] = int(row["estimated_output_48k_bytes"] or 0)
         row["estimated_savings_48k_bytes"] = max(
