@@ -188,15 +188,10 @@ if(window.matchMedia){window.matchMedia('(prefers-color-scheme: light)').addEven
 loadHome();
 render();
 
-const issuesUiScript=document.createElement('script');
-issuesUiScript.src='/static/issues-ui.js';
-document.body.appendChild(issuesUiScript);
-const liveStatsScript=document.createElement('script');
-liveStatsScript.src='/static/live-stats.js';
-document.body.appendChild(liveStatsScript);
-const advancedPresetsScript=document.createElement('script');
-advancedPresetsScript.src='/static/advanced-presets.js';
-document.body.appendChild(advancedPresetsScript);
-const batchEditorScript=document.createElement('script');
-batchEditorScript.src='/static/batch-editor.js';
-document.body.appendChild(batchEditorScript);
+function loadUiAddon(src){const script=document.createElement('script');script.src=src;script.async=false;document.body.appendChild(script)}
+loadUiAddon('/static/issues-ui.js');
+loadUiAddon('/static/live-stats.js');
+loadUiAddon('/static/advanced-presets.js');
+loadUiAddon('/static/batch-editor.js');
+loadUiAddon('/static/retry-failed.js');
+loadUiAddon('/static/maintenance-history.js');
