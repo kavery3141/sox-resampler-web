@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db
+from .admin import build_admin_router
 from .converter import recover_pending_transactions
 from .jobs import ConversionJobManager, JobError
 from .profiles import get_profile, list_profiles
@@ -84,6 +85,21 @@ def _scan_async(mode: str) -> dict[str, Any]:
         return state
     executor.submit(scanner.run, mode)
     return {**scanner.snapshot(), "queued": True}
+
+
+app.include_router(
+    build_admin_router(
+        db_path=DB_PATH,
+        music_root=MUSIC_ROOT,
+        data_root=DATA_ROOT,
+        timezone=TIMEZONE,
+        app_version=APP_VERSION,
+        scanner=scanner,
+        job_manager=job_manager,
+        scan_async=_scan_async,
+        recovery_status=lambda: recovery_status,
+    )
+)
 
 
 def _daily_scan() -> None:
