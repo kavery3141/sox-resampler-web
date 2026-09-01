@@ -102,17 +102,28 @@ def build_batch_review(
     profile: ResampleProfile,
     workers: int,
     reserve_bytes: int,
+    include_paths: set[str] | None = None,
 ) -> dict[str, Any]:
+    """Build and revalidate a destructive batch review.
+
+    Normal library batches select tracks by the active source-rate filter. Retry batches pass
+    ``include_paths`` so only the exact failed source files are reviewed. Exact-path selection is
+    intentionally independent of the old rate filter: a file that changed after its failure is
+    still surfaced and then blocked by the normal live revalidation checks rather than silently
+    disappearing from the retry batch.
+    """
     if workers not in (1, 2):
         raise ValueError("Workers must be 1 or 2")
     music_root = music_root.resolve()
     rate_set = set(rates)
+    exact_paths = {str(Path(path)) for path in include_paths} if include_paths is not None else None
     albums: list[dict[str, Any]] = []
     all_output_estimates: list[int] = []
     total_source = 0
     total_output = 0
     total_matching = 0
     hard_blockers: list[str] = []
+    seen_exact_paths: set[str] = set()
 
     with db.session(db_path) as conn:
         for key in album_keys:
@@ -152,8 +163,13 @@ def build_batch_review(
 
             for row in rows:
                 item = dict(row)
+                indexed_path = str(item["path"])
                 source_rate = int(item["sample_rate"] or 0)
-                if not _matches_rate(source_rate, rate_set, above):
+                if exact_paths is not None:
+                    if indexed_path not in exact_paths:
+                        continue
+                    seen_exact_paths.add(indexed_path)
+                elif not _matches_rate(source_rate, rate_set, above):
                     continue
                 matching += 1
                 source_size = int(item["size_bytes"])
@@ -161,7 +177,7 @@ def build_batch_review(
                 target_bits = source_bits if profile.bit_depth == "preserve" else int(profile.bit_depth)
                 ratio = profile.target_rate / source_rate if source_rate else 1.0
                 estimated = max(1, int(source_size * ratio * 1.10))
-                source_path = Path(item["path"])
+                source_path = Path(indexed_path)
                 track_blockers: list[str] = []
                 command: list[str] = []
                 profile_available = True
@@ -233,7 +249,7 @@ def build_batch_review(
                     dither_applied = _dither_label(profile)
                 tracks.append(
                     {
-                        "path": item["path"],
+                        "path": indexed_path,
                         "filename": item["filename"],
                         "sample_rate": source_rate,
                         "target_rate": profile.target_rate,
@@ -277,6 +293,11 @@ def build_batch_review(
             total_output += album_output
             total_matching += matching
             hard_blockers.extend(f"{albumartist} / {album}: {x}" for x in album_blockers)
+
+    if exact_paths is not None:
+        missing_from_index = sorted(exact_paths - seen_exact_paths)
+        for path in missing_from_index:
+            hard_blockers.append(f"Retry source is no longer present in the local index: {path}; rescan required")
 
     simultaneous_temp = sum(sorted(all_output_estimates, reverse=True)[:workers])
     profile_ready = bool(profile.implementation_ready)
