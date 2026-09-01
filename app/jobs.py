@@ -17,6 +17,7 @@ from .converter import convert_file
 from .index_update import refresh_track
 from .job_events import load_job_events, record_job_event
 from .profiles import ResampleProfile, get_profile, profile_from_dict
+from .resource_control import configured_cpu_limit
 from .storage_health import zfs_pool_health
 
 
@@ -354,8 +355,14 @@ class ConversionJobManager:
                         f"rescan/review required: {source}"
                     )
 
-                result = convert_file(source, profile)
+                cpu_limit_percent = configured_cpu_limit(self.db_path)
+                result = convert_file(
+                    source,
+                    profile,
+                    cpu_limit_percent=cpu_limit_percent,
+                )
                 payload = asdict(result)
+                payload["cpu_limit_percent"] = cpu_limit_percent
                 payload["advisory_busy_guard_supported"] = bool(guard.supported)
                 finished = self._now()
 

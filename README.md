@@ -52,6 +52,8 @@ Stable deployments will use pinned release tags rather than automatic updates. T
 
 New destructive conversion work fails closed if the configured ZFS pool is not confirmed healthy, the music dataset is not writable, free space drops below the configured reserve, Read-only Scan Mode is enabled, or recovery state requires manual attention. On Linux/OpenZFS the app prefers the read-only `/proc/spl/kstat/zfs/<pool>/state` pool heartbeat and retains `zpool status -x` as a fallback.
 
+Conversion CPU throttling is optional and disabled by default. When enabled in Settings, each SoX conversion worker is wrapped with `cpulimit` at the configured 10–100% per-worker ceiling; changes take effect when the next file starts and never initiate conversion.
+
 ## Branding
 
 Approved application icon: `assets/icon.png`.

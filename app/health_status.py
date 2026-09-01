@@ -16,6 +16,8 @@ def summarize_health(
     flac: str | None,
     zfs: dict[str, Any],
     read_only_mode: bool,
+    cpu_limit_percent: int | None = None,
+    cpu_limiter_available: bool = True,
 ) -> dict[str, Any]:
     """Separate service health from destructive-conversion readiness.
 
@@ -53,6 +55,10 @@ def summarize_health(
         conversion_blockers.append("Music root is not writable")
     if read_only_mode:
         conversion_blockers.append("Read-only Scan Mode is enabled")
+    if cpu_limit_percent is not None and not cpu_limiter_available:
+        conversion_blockers.append(
+            "A conversion CPU cap is configured but the cpulimit runtime is unavailable"
+        )
 
     health_reasons = list(dict.fromkeys(health_reasons))
     conversion_blockers = list(dict.fromkeys(conversion_blockers))

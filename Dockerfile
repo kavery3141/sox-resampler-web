@@ -52,6 +52,7 @@ RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.lis
        curl \
        tini \
        util-linux \
+       cpulimit \
        zfsutils-linux \
     && rm -rf /var/lib/apt/lists/*
 

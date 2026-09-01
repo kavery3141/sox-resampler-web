@@ -62,6 +62,12 @@ class HealthStatusTests(unittest.TestCase):
         self.assertFalse(result["conversion_ready"])
         self.assertIn("Ultra 37 SoX backend is unavailable", result["health_reasons"])
 
+    def test_enabled_cpu_cap_without_runtime_blocks_conversion_only(self) -> None:
+        result = self.healthy(cpu_limit_percent=50, cpu_limiter_available=False)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["conversion_ready"])
+        self.assertIn("cpulimit runtime is unavailable", " ".join(result["conversion_blockers"]))
+
 
 if __name__ == "__main__":
     unittest.main()

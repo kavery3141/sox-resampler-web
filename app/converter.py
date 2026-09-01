@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -16,6 +17,7 @@ from mutagen.flac import FLAC
 from .force_stop import abort_requested as registered_abort_requested
 from .force_stop import register_active, unregister_active
 from .profiles import ResampleProfile
+from .resource_control import CPU_LIMIT_MAX, CPU_LIMIT_MIN
 from .transactions import ReplacementJournal, recover_journals
 
 
@@ -333,13 +335,43 @@ def build_sox_command(source: Path, temp: Path, profile: ResampleProfile, source
     return command
 
 
-def preview(source: Path, profile: ResampleProfile) -> dict[str, Any]:
+def apply_cpu_limit(command: list[str], cpu_limit_percent: int | None) -> list[str]:
+    """Wrap a SoX command with a per-worker CPU throttle when configured.
+
+    ``cpulimit`` measures percentage relative to one logical CPU. Each conversion worker receives
+    its own cap, so two workers may together consume up to roughly twice the configured value.
+    The wrapper is operational only; it does not alter DSP settings or the resampling preset.
+    """
+    if cpu_limit_percent is None:
+        return command
+    try:
+        limit = int(cpu_limit_percent)
+    except (TypeError, ValueError) as exc:
+        raise ConversionError("CPU limit must be an integer percentage") from exc
+    if not CPU_LIMIT_MIN <= limit <= CPU_LIMIT_MAX:
+        raise ConversionError(
+            f"CPU limit must be between {CPU_LIMIT_MIN} and {CPU_LIMIT_MAX} percent per worker"
+        )
+    if shutil.which("cpulimit") is None:
+        raise ProfileUnavailable(
+            "A conversion CPU cap is configured but the cpulimit runtime is unavailable"
+        )
+    return ["cpulimit", "-q", "-l", str(limit), "--", *command]
+
+
+def preview(
+    source: Path,
+    profile: ResampleProfile,
+    *,
+    cpu_limit_percent: int | None = None,
+) -> dict[str, Any]:
     audio = FLAC(source)
     source_bits = int(audio.info.bits_per_sample)
     temp = source.with_name(f".{source.name}.sox-resampler.tmp.flac")
     blockers = preservation_blockers(source)
     try:
         command = build_sox_command(source, temp, profile, source_bits)
+        command = apply_cpu_limit(command, cpu_limit_percent)
         profile_available = True
         profile_error = None
     except ProfileUnavailable as exc:
@@ -450,6 +482,7 @@ def convert_file(
     profile: ResampleProfile,
     journal_root: Path | None = None,
     *,
+    cpu_limit_percent: int | None = None,
     abort_check: Callable[[], bool] | None = None,
 ) -> ConversionResult:
     source = source.resolve(strict=True)
@@ -472,6 +505,7 @@ def convert_file(
         raise ConversionError(f"Temporary file already exists: {temp}")
 
     command = build_sox_command(source, temp, profile, src_bits)
+    command = apply_cpu_limit(command, cpu_limit_percent)
     result = ConversionResult(
         source=str(source),
         status="running",

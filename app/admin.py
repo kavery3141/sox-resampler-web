@@ -375,6 +375,7 @@ def build_admin_router(
                 "sox_ultra_37": _tool_version([SOX_ULTRA_BIN, "--version"]),
                 "flac": _tool_version(["flac", "--version"]),
                 "metaflac": _tool_version(["metaflac", "--version"]),
+                "cpulimit": _tool_version(["cpulimit", "-h"]),
                 "python": _tool_version(["python", "--version"]),
             },
         }

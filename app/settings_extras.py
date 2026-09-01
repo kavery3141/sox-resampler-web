@@ -164,6 +164,7 @@ def build_settings_extras_router(
         # Deliberately preserve exclusions, index data, history/logs and all custom presets.
         db.set_setting(db_path, "free_space_reserve_bytes", DEFAULT_RESERVE_BYTES)
         db.set_setting(db_path, "read_only_mode", False)
+        db.set_setting(db_path, "conversion_cpu_limit_percent", None)
         db.set_setting(db_path, "daily_scan_time", DEFAULT_DAILY_SCAN_TIME)
         configure_daily_scan_job(scheduler, daily_scan, db_path)
 
@@ -174,6 +175,7 @@ def build_settings_extras_router(
         result = {
             **schedule_status(scheduler, db_path, timezone),
             "read_only_mode": False,
+            "cpu_limit_percent": None,
             "free_space_reserve_bytes": DEFAULT_RESERVE_BYTES,
             "free_space_reserve_gb": 10.0,
             "preserved": {

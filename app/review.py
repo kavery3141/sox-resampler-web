@@ -9,6 +9,7 @@ from mutagen.flac import FLAC
 from . import db
 from .converter import preview
 from .profiles import ResampleProfile
+from .resource_control import configured_cpu_limit
 
 
 KEY_TAGS = (
@@ -123,6 +124,7 @@ def build_batch_review(
     total_matching = 0
     hard_blockers: list[str] = []
     seen_exact_paths: set[str] = set()
+    cpu_limit_percent = configured_cpu_limit(db_path)
 
     with db.session(db_path) as conn:
         mbid_identity_rows = conn.execute(
@@ -262,7 +264,11 @@ def build_batch_review(
                         if int(item.get("mtime_ns") or 0) != current_mtime_ns:
                             track_blockers.append("Source modification time changed since scan; rescan required")
 
-                        detail = preview(resolved_source, profile)
+                        detail = preview(
+                            resolved_source,
+                            profile,
+                            cpu_limit_percent=cpu_limit_percent,
+                        )
                         if int(detail["sample_rate"]) != source_rate:
                             track_blockers.append(
                                 f"Source sample rate changed since scan ({source_rate} -> {detail['sample_rate']}); rescan required"
@@ -375,6 +381,7 @@ def build_batch_review(
     return {
         "profile": profile.to_dict(),
         "workers": workers,
+        "cpu_limit_percent": cpu_limit_percent,
         "albums": albums,
         "album_count": len(albums),
         "matching_tracks": total_matching,

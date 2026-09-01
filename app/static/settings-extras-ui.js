@@ -27,7 +27,7 @@ function settingsExtrasInstall(){
   reset.style.marginTop='14px';
   reset.innerHTML=`
     <h3 style="margin-top:0">Reset to Defaults</h3>
-    <div class="muted">Restores app and browser preference defaults, including the 10 GB free-space reserve, 10:00 daily scan time, System theme, Comfortable density, the normal 96/192 kHz source filter and the built-in default resampler preset. Library index data, exclusions, history, logs and custom presets are preserved.</div>
+    <div class="muted">Restores app and browser preference defaults, including the 10 GB free-space reserve, disabled conversion CPU cap, 10:00 daily scan time, System theme, Comfortable density, the normal 96/192 kHz source filter and the built-in default resampler preset. Library index data, exclusions, history, logs and custom presets are preserved.</div>
     <div class="toolbar" style="margin-top:14px"><button id="resetAppDefaults" class="danger">Reset App Defaults</button></div>
     <div id="resetDefaultsNotice" class="notice hidden"></div>`;
   view.appendChild(reset);

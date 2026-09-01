@@ -30,6 +30,11 @@ from .operations_log import configure_file_logging, record_event
 from .profile_store import get_profile as get_stored_profile, list_all_profiles
 from .profiles import ResampleProfile, apply_profile_override
 from .profiles_api import build_profiles_router
+from .resource_control import (
+    build_resource_control_router,
+    configured_cpu_limit,
+    cpulimit_available,
+)
 from .reports import (
     load_job_report,
     render_job_csv,
@@ -131,6 +136,7 @@ app.include_router(
 )
 app.include_router(build_profiles_router(DB_PATH))
 app.include_router(build_update_router(APP_VERSION))
+app.include_router(build_resource_control_router(DB_PATH, TIMEZONE, job_manager))
 app.include_router(
     build_settings_extras_router(
         db_path=DB_PATH,
@@ -364,14 +370,17 @@ def health() -> dict[str, Any]:
     sox = _tool_version(["sox", "--version"])
     ultra_sox = _tool_version([SOX_ULTRA_BIN, "--version"])
     flac = _tool_version(["flac", "--version"])
+    cpu_limiter = _tool_version(["cpulimit", "-h"]) if cpulimit_available() else None
     zfs = zfs_pool_health()
     try:
         db.init(DB_PATH)
         db_ok = True
         read_only_mode = bool(db.get_setting(DB_PATH, "read_only_mode", False))
+        cpu_limit_percent = configured_cpu_limit(DB_PATH)
     except Exception:
         db_ok = False
         read_only_mode = False
+        cpu_limit_percent = None
     summary = summarize_health(
         music_exists=music_exists,
         music_readable=music_readable,
@@ -384,6 +393,8 @@ def health() -> dict[str, Any]:
         flac=flac,
         zfs=zfs,
         read_only_mode=read_only_mode,
+        cpu_limit_percent=cpu_limit_percent,
+        cpu_limiter_available=bool(cpu_limiter),
     )
     return {
         **summary,
@@ -397,7 +408,12 @@ def health() -> dict[str, Any]:
         },
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
-        "tools": {"sox": sox, "sox_ultra_37": ultra_sox, "flac": flac},
+        "tools": {"sox": sox, "sox_ultra_37": ultra_sox, "flac": flac, "cpulimit": cpu_limiter},
+        "resource_control": {
+            "cpu_limit_percent": cpu_limit_percent,
+            "enabled": cpu_limit_percent is not None,
+            "scope": "per-worker-sox",
+        },
         "zfs": zfs,
         "transaction_recovery": recovery_status,
     }
@@ -422,6 +438,7 @@ def status() -> dict[str, Any]:
         "free_bytes": usage.free if usage else None,
         "free_space_reserve_bytes": reserve,
         "read_only_mode": bool(db.get_setting(DB_PATH, "read_only_mode", False)),
+        "cpu_limit_percent": configured_cpu_limit(DB_PATH),
         "library": db.library_summary(DB_PATH),
         "scan": scanner.snapshot(),
         "latest_scan": db.latest_scan(DB_PATH),

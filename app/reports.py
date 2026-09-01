@@ -70,6 +70,7 @@ def render_review_txt(review: dict[str, Any], timezone: str) -> str:
         f"Headroom: {profile.get('headroom_db') if profile.get('headroom_db') is not None else 0.0} dB",
         f"FLAC compression: {profile.get('flac_compression') if profile.get('flac_compression') is not None else ''}",
         f"Workers: {review.get('workers') or ''}",
+        f"CPU cap per worker: {str(review.get('cpu_limit_percent')) + '%' if review.get('cpu_limit_percent') is not None else 'disabled'}",
         f"Albums: {review.get('album_count') or 0}",
         f"Matching tracks: {review.get('matching_tracks') or 0}",
         f"Source bytes: {review.get('source_bytes') or 0}",
@@ -131,6 +132,7 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
         "headroom_db",
         "flac_compression",
         "workers",
+        "cpu_limit_percent",
         "albumartist",
         "album",
         "folder",
@@ -171,6 +173,7 @@ def render_review_csv(review: dict[str, Any], timezone: str) -> str:
                     "headroom_db": profile.get("headroom_db") if profile.get("headroom_db") is not None else 0.0,
                     "flac_compression": profile.get("flac_compression") if profile.get("flac_compression") is not None else "",
                     "workers": review.get("workers") or "",
+                    "cpu_limit_percent": review.get("cpu_limit_percent") if review.get("cpu_limit_percent") is not None else "",
                     "albumartist": album.get("albumartist") or "",
                     "album": album.get("album") or "",
                     "folder": album.get("folder") or "",
@@ -241,6 +244,7 @@ def load_job_report(db_path: Path, job_id: int, timezone: str) -> dict[str, Any]
                 "target_rate": payload.get("target_rate"),
                 "source_bits": payload.get("source_bits"),
                 "target_bits": payload.get("target_bits"),
+                "cpu_limit_percent": payload.get("cpu_limit_percent"),
                 "temp_sha256": item.get("temp_sha256"),
                 "final_sha256": item.get("final_sha256"),
                 "index_refresh_error": payload.get("index_refresh_error"),
@@ -339,6 +343,7 @@ def render_job_txt(report: dict[str, Any]) -> str:
             "  "
             f"Rate: {item.get('source_rate') or ''} -> {item.get('target_rate') or ''}; "
             f"Bits: {item.get('source_bits') or ''} -> {item.get('target_bits') or ''}; "
+            f"CPU cap: {str(item.get('cpu_limit_percent')) + '% per worker' if item.get('cpu_limit_percent') is not None else 'disabled'}; "
             f"Bytes: {item['source_bytes']} -> {item['final_bytes']}; "
             f"Savings: {item['savings_bytes']}"
         )
@@ -377,6 +382,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
         "target_rate",
         "source_bits",
         "target_bits",
+        "cpu_limit_percent",
         "source_bytes",
         "final_bytes",
         "savings_bytes",
@@ -412,6 +418,7 @@ def render_job_csv(report: dict[str, Any]) -> str:
                 "target_rate": item.get("target_rate") or "",
                 "source_bits": item.get("source_bits") or "",
                 "target_bits": item.get("target_bits") or "",
+                "cpu_limit_percent": item.get("cpu_limit_percent") if item.get("cpu_limit_percent") is not None else "",
                 "source_bytes": item["source_bytes"],
                 "final_bytes": item["final_bytes"],
                 "savings_bytes": item["savings_bytes"],
