@@ -4,6 +4,7 @@ import fnmatch
 import os
 import sqlite3
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -111,6 +112,84 @@ def _preview_exclusions(music_root: Path, exact: list[str], globs: list[str]) ->
     return {"folders": folder_count, "flac_files": flac_count}
 
 
+def _timestamp(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _job_runtime_times(db_path: Path, job_id: int) -> dict[str, float | int | str | None]:
+    now = datetime.now().astimezone().timestamp()
+    terminal = {"completed", "cancelled", "stopped"}
+    with db.session(db_path) as conn:
+        job = conn.execute(
+            "SELECT status,started_at,finished_at FROM conversion_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if not job:
+            return {
+                "status": None,
+                "wall_seconds": 0.0,
+                "active_seconds": 0.0,
+                "paused_or_idle_seconds": 0.0,
+                "active_files": 0,
+            }
+        rows = conn.execute(
+            "SELECT status,started_at,finished_at FROM conversion_files "
+            "WHERE job_id=? AND started_at IS NOT NULL",
+            (job_id,),
+        ).fetchall()
+
+    start = _timestamp(job["started_at"])
+    if start is None:
+        return {
+            "status": str(job["status"]),
+            "wall_seconds": 0.0,
+            "active_seconds": 0.0,
+            "paused_or_idle_seconds": 0.0,
+            "active_files": 0,
+        }
+    end = _timestamp(job["finished_at"]) if str(job["status"]) in terminal else now
+    end = max(start, end if end is not None else now)
+
+    intervals: list[tuple[float, float]] = []
+    active_files = 0
+    for row in rows:
+        row_start = _timestamp(row["started_at"])
+        if row_start is None:
+            continue
+        row_end = _timestamp(row["finished_at"])
+        if row_end is None and str(row["status"]) == "running":
+            row_end = now
+            active_files += 1
+        if row_end is None:
+            continue
+        a = max(start, row_start)
+        b = min(end, max(row_start, row_end))
+        if b > a:
+            intervals.append((a, b))
+
+    intervals.sort()
+    merged: list[list[float]] = []
+    for a, b in intervals:
+        if not merged or a > merged[-1][1]:
+            merged.append([a, b])
+        else:
+            merged[-1][1] = max(merged[-1][1], b)
+    active_seconds = sum(b - a for a, b in merged)
+    wall_seconds = max(0.0, end - start)
+    return {
+        "status": str(job["status"]),
+        "wall_seconds": round(wall_seconds, 3),
+        "active_seconds": round(active_seconds, 3),
+        "paused_or_idle_seconds": round(max(0.0, wall_seconds - active_seconds), 3),
+        "active_files": active_files,
+    }
+
+
 def build_admin_router(
     *,
     db_path: Path,
@@ -173,6 +252,45 @@ def build_admin_router(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {**_preview_exclusions(music_root, exact, globs), "exclude_paths": exact, "exclude_globs": globs}
+
+    @router.get("/api/runtime/metrics")
+    def runtime_metrics(job_id: int | None = None) -> dict[str, Any]:
+        disk = psutil.disk_io_counters()
+        process = psutil.Process()
+        selected_job_id = job_id if job_id is not None else job_manager.active_job_id()
+        job_times = _job_runtime_times(db_path, selected_job_id) if selected_job_id is not None else {
+            "status": None,
+            "wall_seconds": 0.0,
+            "active_seconds": 0.0,
+            "paused_or_idle_seconds": 0.0,
+            "active_files": 0,
+        }
+        recovery = recovery_status()
+        recovery_blocked = any(
+            item.get("action") == "manual_attention"
+            or str(item.get("action", "")).startswith("recovery_error")
+            for item in recovery
+        )
+        active_files = int(job_times["active_files"] or 0)
+        safe_to_restart = active_files == 0 and not recovery_blocked
+        if recovery_blocked:
+            restart_reason = "An interrupted file transaction needs manual attention"
+        elif active_files:
+            restart_reason = "Wait for the current file conversion to finish"
+        else:
+            restart_reason = "No audio file is actively being converted"
+        return {
+            "scope": "system-visible-from-container",
+            "cpu_percent": psutil.cpu_percent(interval=0.05),
+            "memory_percent": psutil.virtual_memory().percent,
+            "process_rss_bytes": process.memory_info().rss,
+            "disk_read_bytes_total": int(disk.read_bytes) if disk else None,
+            "disk_write_bytes_total": int(disk.write_bytes) if disk else None,
+            "job_id": selected_job_id,
+            "job_time": job_times,
+            "safe_to_restart": safe_to_restart,
+            "safe_to_restart_reason": restart_reason,
+        }
 
     @router.get("/api/maintenance/status")
     def maintenance_status() -> dict[str, Any]:
