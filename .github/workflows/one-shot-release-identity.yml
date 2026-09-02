@@ -1,0 +1,41 @@
+name: One-shot release identity correction
+
+on:
+  push:
+    paths:
+      - tools/patch_release_identity.py
+      - .github/workflows/one-shot-release-identity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Apply targeted patch
+        run: python tools/patch_release_identity.py
+      - name: Validate Python syntax
+        run: python -m py_compile app/issues.py app/db.py app/review.py tests/test_candidate_albums.py tests/test_release_identity_issues.py
+      - name: Run release identity tests
+        env:
+          PYTHONPATH: .
+        run: pytest -q tests/test_candidate_albums.py tests/test_release_identity_issues.py
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/issues.py app/db.py app/review.py tests/test_candidate_albums.py tests/test_release_identity_issues.py
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'Correct album release identity handling'
+            git push
+          fi
