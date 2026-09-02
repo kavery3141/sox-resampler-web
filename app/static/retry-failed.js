@@ -86,8 +86,14 @@ async function retryFailedRefresh(){
     const workers=Number($('retryFailedWorkers').value||1);
     const params=new URLSearchParams({workers:String(workers),source_pre_hash:String(Boolean($('retryFailedSourcePreHash').checked))});
     const response=await fetch(`/api/convert/jobs/${jobId}/retry-review?${params}`);
-    const data=await response.json();
-    if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Retry review failed');
+    const text=await response.text();
+    let data=null;
+    try{data=text?JSON.parse(text):null}catch(_error){data=null}
+    if(!response.ok){
+      const detail=typeof data?.detail==='string'?data.detail:(text||`Retry review failed (HTTP ${response.status})`);
+      throw new Error(detail);
+    }
+    if(!data||typeof data!=='object')throw new Error('Retry review returned an invalid response');
     retryFailedRender(data);
   }catch(error){
     retryFailedState.review=null;$('retryFailedStatus').className='notice bad';$('retryFailedStatus').textContent=error.message;$('retryFailedSummary').classList.add('hidden');$('retryFailedAlbums').innerHTML='';$('retryFailedAckArea').classList.add('hidden');$('retryFailedActions').classList.add('hidden');
@@ -99,8 +105,14 @@ async function retryFailedStart(){
   const button=$('retryFailedStart');button.disabled=true;const old=button.innerHTML;button.textContent='Starting Retry…';
   try{
     const response=await fetch(`/api/convert/jobs/${jobId}/retry-start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workers:Number($('retryFailedWorkers').value||1),source_pre_hash:Boolean($('retryFailedSourcePreHash').checked),acknowledged_replace_in_place:true})});
-    const data=await response.json();
-    if(!response.ok){const detail=typeof data.detail==='string'?data.detail:(data.detail?.blockers||[]).join('; ');throw new Error(detail||'Unable to start retry')}
+    const text=await response.text();
+    let data=null;
+    try{data=text?JSON.parse(text):null}catch(_error){data=null}
+    if(!response.ok){
+      const detail=typeof data?.detail==='string'?data.detail:(Array.isArray(data?.detail?.blockers)?data.detail.blockers.join('; '):(text||`Unable to start retry (HTTP ${response.status})`));
+      throw new Error(detail||'Unable to start retry');
+    }
+    if(!data||!data.job_id)throw new Error('Retry start returned an invalid response');
     retryFailedClose();watchJob(data.job_id,true);
   }catch(error){$('retryFailedStatus').className='notice bad';$('retryFailedStatus').textContent=error.message;retryFailedEnableStart()}
   finally{button.innerHTML=old}
