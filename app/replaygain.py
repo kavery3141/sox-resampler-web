@@ -177,6 +177,26 @@ def apply_replaygain_transaction(
     fs_meta = filesystem_metadata(source)
     original_identity = identity(source)
     journal = ReplacementJournal(data_root / "transactions", source)
+    exchanged = False
+
+    def rollback_after_exchange(reason: str) -> None:
+        nonlocal exchanged
+        if not exchanged:
+            return
+        _rename_exchange(source, temp)
+        exchanged = False
+        if identity(source) != original_identity:
+            raise ReplayGainError(
+                f"{reason}; rollback did not restore the original source identity; recovery journal retained"
+            )
+        try:
+            temp.unlink()
+        except OSError as exc:
+            raise ReplayGainError(
+                f"{reason}; original restored but generated ReplayGain temp could not be removed: {exc}"
+            ) from exc
+        journal.clear()
+
     try:
         shutil.copyfile(source, temp)
         _write_values(temp, values)
@@ -189,13 +209,21 @@ def apply_replaygain_transaction(
         new_sha = _sha256(temp)
         journal.prepare(source, temp, original_identity, new_sha)
         _rename_exchange(source, temp)
+        exchanged = True
         journal.mark_exchanged()
         if _sha256(source) != new_sha:
-            _rename_exchange(source, temp)
+            rollback_after_exchange("ReplayGain replacement checksum verification failed")
             raise ReplayGainError("ReplayGain replacement checksum verification failed; rolled back")
-        _verify_metadata_only(temp, source, values)
+        try:
+            _verify_metadata_only(temp, source, values)
+        except Exception as exc:
+            rollback_after_exchange("ReplayGain post-exchange metadata verification failed")
+            raise ReplayGainError(
+                f"ReplayGain post-exchange metadata verification failed; rolled back: {exc}"
+            ) from exc
         journal.mark_verified()
         temp.unlink()
+        exchanged = False
         journal.clear()
         return new_sha
     except (ReplayGainError, ConversionError):
