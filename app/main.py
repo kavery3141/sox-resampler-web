@@ -389,6 +389,7 @@ def health() -> dict[str, Any]:
     sox = _tool_version(["sox", "--version"])
     ultra_sox = _tool_version([SOX_ULTRA_BIN, "--version"])
     flac = _tool_version(["flac", "--version"])
+    rsgain = _tool_version(["rsgain", "--version"])
     cpu_limiter = _tool_version(["cpulimit", "-h"]) if cpulimit_available() else None
     zfs = zfs_pool_health()
     try:
@@ -410,6 +411,7 @@ def health() -> dict[str, Any]:
         stock_sox=sox,
         ultra_sox=ultra_sox,
         flac=flac,
+        rsgain=rsgain,
         zfs=zfs,
         read_only_mode=read_only_mode,
         cpu_limit_percent=cpu_limit_percent,
@@ -428,7 +430,7 @@ def health() -> dict[str, Any]:
         },
         "data_root": {"path": str(DATA_ROOT), "exists": data_exists, "writable": data_writable},
         "database": {"path": str(DB_PATH), "ok": db_ok},
-        "tools": {"sox": sox, "sox_ultra_37": ultra_sox, "flac": flac, "cpulimit": cpu_limiter},
+        "tools": {"sox": sox, "sox_ultra_37": ultra_sox, "flac": flac, "rsgain": rsgain, "cpulimit": cpu_limiter},
         "resource_control": {
             "cpu_limit_percent": cpu_limit_percent,
             "enabled": cpu_limit_percent is not None,

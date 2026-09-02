@@ -18,6 +18,7 @@ from .index_update import refresh_track
 from .job_events import load_job_events, record_job_event
 from .profiles import ResampleProfile, get_profile, profile_from_dict
 from .resource_control import configured_cpu_limit
+from .replaygain import ReplayGainError, apply_replaygain_transaction, scan_album
 from .source_snapshot import capture_source_snapshot, compare_source_snapshots
 from .storage_health import zfs_pool_health
 
@@ -472,6 +473,87 @@ class ConversionJobManager:
         except Exception as exc:
             return self._record_file_failure(file_id, str(exc))
 
+    def _refresh_album_replaygain(self, job_id: int, album_index: int) -> None:
+        with db.session(self.db_path) as conn:
+            identity_row = conn.execute(
+                "SELECT albumartist,album FROM conversion_files WHERE job_id=? AND album_index=? LIMIT 1",
+                (job_id, album_index),
+            ).fetchone()
+            if not identity_row:
+                return
+            converted = conn.execute(
+                "SELECT id,path,result_json FROM conversion_files "
+                "WHERE job_id=? AND album_index=? AND status='completed' ORDER BY file_index",
+                (job_id, album_index),
+            ).fetchall()
+            if not converted:
+                return
+            album_rows = conn.execute(
+                "SELECT path FROM tracks WHERE COALESCE(albumartist,'')=? AND COALESCE(album,'')=? "
+                "ORDER BY folder COLLATE NOCASE, filename COLLATE NOCASE",
+                (str(identity_row['albumartist']), str(identity_row['album'])),
+            ).fetchall()
+        album_paths = [Path(str(row['path'])).resolve() for row in album_rows]
+        if not album_paths:
+            raise JobError('ReplayGain recalculation could not resolve the logical album from the local index')
+        missing = [str(path) for path in album_paths if not path.is_file()]
+        if missing:
+            raise JobError('ReplayGain recalculation requires every logical-album track to be readable: ' + '; '.join(missing[:5]))
+        try:
+            values = scan_album(album_paths)
+            for row in converted:
+                path = Path(str(row['path'])).resolve()
+                rg = values.get(path)
+                if rg is None:
+                    raise ReplayGainError(f'rsgain returned no track result for {path}')
+                final_sha = apply_replaygain_transaction(path, rg, self.db_path.parent)
+                try:
+                    payload = json.loads(row['result_json'] or '{}')
+                except (TypeError, json.JSONDecodeError):
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                payload['replaygain'] = {
+                    'recalculated': True,
+                    'algorithm': 'ReplayGain 2.0 / BS.1770',
+                    'true_peak': True,
+                    'target_loudness_lufs': -18,
+                    'clip_mode': 'always',
+                    'max_peak_db': 0,
+                    'track_gain': rg.track_gain,
+                    'track_peak': rg.track_peak,
+                    'album_gain': rg.album_gain,
+                    'album_peak': rg.album_peak,
+                    'reference_loudness': rg.reference_loudness,
+                }
+                payload['final_sha256'] = final_sha
+                refresh_track(self.db_path, self.music_root, path, self.timezone)
+                with db.session(self.db_path) as conn:
+                    conn.execute(
+                        'UPDATE conversion_files SET final_sha256=?,result_json=? WHERE id=?',
+                        (final_sha, json.dumps(payload, separators=(',', ':')), int(row['id'])),
+                    )
+            self._event(
+                job_id,
+                'replaygain_album_updated',
+                {
+                    'album_index': album_index,
+                    'albumartist': str(identity_row['albumartist']),
+                    'album': str(identity_row['album']),
+                    'logical_album_tracks': len(album_paths),
+                    'converted_tracks_updated': len(converted),
+                    'true_peak': True,
+                    'target_loudness_lufs': -18,
+                },
+            )
+        except Exception as exc:
+            self._event(
+                job_id,
+                'replaygain_album_error',
+                {'album_index': album_index, 'error_type': type(exc).__name__, 'error': str(exc)},
+            )
+            raise JobError(f'ReplayGain recalculation failed after audio conversion: {type(exc).__name__}: {exc}') from exc
+
     def _retry_deferred_files(
         self,
         job_id: int,
@@ -621,6 +703,10 @@ class ConversionJobManager:
                             if payload.get("status") == "failed":
                                 terminal_error = payload.get("error") or terminal_error
                     # Control requests and runtime safeguards are honored between active waves.
+                # ReplayGain is recalculated from the full current logical album and written only
+                # to tracks converted by this job. This is a user-initiated conversion stage, never
+                # a scheduled/background library write. Re-running it on resume is intentional.
+                self._refresh_album_replaygain(job_id, album_index)
                 if terminal_status in ("paused", "cancelled"):
                     break
                 if self._controls(job_id)["stop_album"]:
@@ -633,6 +719,10 @@ class ConversionJobManager:
                 )
                 terminal_status = deferred_status
                 terminal_error = deferred_error or terminal_error
+                # A deferred source may have changed the final logical-album audio set; refresh
+                # album/track ReplayGain once more after the one allowed deferred retry pass.
+                for album_index in album_indices:
+                    self._refresh_album_replaygain(job_id, album_index)
         except Exception as exc:
             terminal_status = "interrupted"
             terminal_error = str(exc)

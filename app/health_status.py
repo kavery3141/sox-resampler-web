@@ -14,6 +14,7 @@ def summarize_health(
     stock_sox: str | None,
     ultra_sox: str | None,
     flac: str | None,
+    rsgain: str | None,
     zfs: dict[str, Any],
     read_only_mode: bool,
     cpu_limit_percent: int | None = None,
@@ -47,6 +48,8 @@ def summarize_health(
         health_reasons.append("Ultra 37 SoX backend is unavailable")
     if not flac:
         health_reasons.append("FLAC verification tool is unavailable")
+    if not rsgain:
+        health_reasons.append("ReplayGain 2.0 rsgain tool is unavailable")
     if not bool(zfs.get("ok")):
         health_reasons.append(str(zfs.get("reason") or "ZFS pool health is not confirmed healthy"))
 

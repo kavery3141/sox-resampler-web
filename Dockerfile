@@ -58,6 +58,14 @@ RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.lis
        zfsutils-linux \
     && rm -rf /var/lib/apt/lists/*
 
+ARG RSGAIN_VERSION=3.7
+RUN curl -fsSL "https://github.com/complexlogic/rsgain/releases/download/v${RSGAIN_VERSION}/rsgain_${RSGAIN_VERSION}-1_amd64.deb" -o /tmp/rsgain.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/rsgain.deb \
+    && rm -f /tmp/rsgain.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && rsgain --version
+
 COPY --from=sox-ultra-builder /stage/opt/sox-ultra /opt/sox-ultra
 
 WORKDIR /app
@@ -69,6 +77,7 @@ COPY tests ./tests
 RUN printf '%s\n' "$BUILD_SHA" > /app/app/static/build.txt \
     && python -m compileall -q app tests \
     && /opt/sox-ultra/bin/sox --version \
+    && rsgain --version \
     && /opt/sox-ultra/bin/sox -n -r 96000 -b 24 /tmp/ultra-input.flac synth 0.05 sine 997 vol 0.1 \
     && /opt/sox-ultra/bin/sox /tmp/ultra-input.flac /tmp/ultra-output.flac rate -d 37 -B 95 -p 50 48000 \
     && test "$(/opt/sox-ultra/bin/soxi -r /tmp/ultra-output.flac)" = "48000" \
