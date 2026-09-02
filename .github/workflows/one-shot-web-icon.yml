@@ -1,0 +1,27 @@
+name: One-shot Web UI icon fix
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/one_shot_web_icon.py
+      - .github/workflows/one-shot-web-icon.yml
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/one_shot_web_icon.py
+      - run: |
+          grep -Fq 'rel="icon" type="image/png" href="/static/icon.png?v=20260902"' app/static/index.html
+          grep -Fq '<img src="/static/icon.png?v=20260902" alt="SoX Resampler Web">' app/static/index.html
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/static/index.html
+          git diff --cached --quiet && exit 0
+          git commit -m "Use approved icon in Web UI"
+          git push
