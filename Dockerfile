@@ -35,11 +35,13 @@ RUN cd /build/source \
 FROM python:3.12-slim-bookworm
 
 ARG APP_VERSION=0.7.0-dev
+ARG BUILD_SHA=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=America/Indiana/Indianapolis \
     APP_VERSION=${APP_VERSION} \
+    BUILD_SHA=${BUILD_SHA} \
     SOX_ULTRA_BIN=/opt/sox-ultra/bin/sox \
     ZFS_POOL=MainStorage
 
@@ -64,7 +66,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY tests ./tests
-RUN python -m compileall -q app tests \
+RUN printf '%s\n' "$BUILD_SHA" > /app/app/static/build.txt \
+    && python -m compileall -q app tests \
     && /opt/sox-ultra/bin/sox --version \
     && /opt/sox-ultra/bin/sox -n -r 96000 -b 24 /tmp/ultra-input.flac synth 0.05 sine 997 vol 0.1 \
     && /opt/sox-ultra/bin/sox /tmp/ultra-input.flac /tmp/ultra-output.flac rate -d 37 -B 95 -p 50 48000 \
