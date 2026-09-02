@@ -279,11 +279,74 @@ def ownership_preservation_blockers(path: Path) -> list[str]:
 def preservation_blockers(path: Path) -> list[str]:
     blocks = flac_metadata_block_types(path)
     blockers = ownership_preservation_blockers(path)
-    if APPLICATION in blocks:
-        blockers.append("FLAC APPLICATION metadata block present; safe preservation support is not implemented yet")
     if CUESHEET in blocks:
         blockers.append("Embedded FLAC CUESHEET present; offsets require sample-rate-aware rewriting")
     return blockers
+
+
+def _read_raw_flac_metadata(path: Path) -> tuple[list[tuple[int, bytes]], int]:
+    blocks: list[tuple[int, bytes]] = []
+    with path.open("rb") as handle:
+        if handle.read(4) != b"fLaC":
+            raise ConversionError(f"Not a native FLAC file: {path}")
+        last = False
+        while not last:
+            header = handle.read(4)
+            if len(header) != 4:
+                raise ConversionError(f"Truncated FLAC metadata: {path}")
+            last = bool(header[0] & 0x80)
+            block_type = header[0] & 0x7F
+            length = int.from_bytes(header[1:4], "big")
+            payload = handle.read(length)
+            if len(payload) != length:
+                raise ConversionError(f"Truncated FLAC metadata payload: {path}")
+            blocks.append((block_type, payload))
+        audio_offset = handle.tell()
+    if not blocks or blocks[0][0] != STREAMINFO:
+        raise ConversionError(f"FLAC STREAMINFO is missing or not first: {path}")
+    return blocks, audio_offset
+
+
+def _application_payloads(path: Path) -> tuple[bytes, ...]:
+    blocks, _ = _read_raw_flac_metadata(path)
+    return tuple(payload for block_type, payload in blocks if block_type == APPLICATION)
+
+
+def _copy_application_blocks(source: Path, target: Path) -> None:
+    source_apps = _application_payloads(source)
+    target_blocks, audio_offset = _read_raw_flac_metadata(target)
+    if not source_apps and not any(block_type == APPLICATION for block_type, _ in target_blocks):
+        return
+
+    kept = [(block_type, payload) for block_type, payload in target_blocks if block_type != APPLICATION]
+    rebuilt = [kept[0], *((APPLICATION, payload) for payload in source_apps), *kept[1:]]
+    rewrite = target.with_name(f".{target.name}.application-metadata.tmp")
+    try:
+        with target.open("rb") as src_handle, rewrite.open("wb") as out:
+            out.write(b"fLaC")
+            for index, (block_type, payload) in enumerate(rebuilt):
+                if len(payload) > 0xFFFFFF:
+                    raise ConversionError("FLAC metadata block exceeds the 24-bit length limit")
+                first = block_type | (0x80 if index == len(rebuilt) - 1 else 0)
+                out.write(bytes((first,)))
+                out.write(len(payload).to_bytes(3, "big"))
+                out.write(payload)
+            src_handle.seek(audio_offset)
+            shutil.copyfileobj(src_handle, out, length=4 * 1024 * 1024)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(rewrite, target)
+    finally:
+        rewrite.unlink(missing_ok=True)
+
+
+def _compare_application_blocks(source: Path, target: Path) -> None:
+    expected = _application_payloads(source)
+    actual = _application_payloads(target)
+    if actual != expected:
+        raise ConversionError(
+            f"FLAC APPLICATION metadata blocks differ after copy: expected {len(expected)}, got {len(actual)}"
+        )
 
 
 def _normalize_tags(audio: FLAC) -> dict[str, tuple[str, ...]]:
@@ -307,6 +370,7 @@ def copy_user_metadata(source: Path, target: Path) -> None:
     for picture in src.pictures:
         dst.add_picture(picture)
     dst.save()
+    _copy_application_blocks(source, target)
 
 
 def compare_user_metadata(source: Path, target: Path) -> None:
@@ -316,6 +380,7 @@ def compare_user_metadata(source: Path, target: Path) -> None:
         raise ConversionError("Vorbis comments/tags differ after metadata copy")
     if _picture_payloads(src) != _picture_payloads(dst):
         raise ConversionError("Embedded picture blocks differ after metadata copy")
+    _compare_application_blocks(source, target)
 
 
 def _rename_exchange(path_a: Path, path_b: Path) -> None:
