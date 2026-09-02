@@ -17,6 +17,7 @@ class HealthStatusTests(unittest.TestCase):
             "stock_sox": "SoX v14.4.2",
             "ultra_sox": "SoX v14.4.2",
             "flac": "flac 1.4.2",
+            "rsgain": "rsgain 3.7",
             "zfs": {"ok": True, "pool": "MainStorage", "state": "ONLINE"},
             "read_only_mode": False,
         }
@@ -61,6 +62,12 @@ class HealthStatusTests(unittest.TestCase):
         self.assertEqual(result["status"], "degraded")
         self.assertFalse(result["conversion_ready"])
         self.assertIn("Ultra 37 SoX backend is unavailable", result["health_reasons"])
+
+    def test_missing_rsgain_is_visible_and_blocks_conversion(self) -> None:
+        result = self.healthy(rsgain=None)
+        self.assertEqual(result["status"], "degraded")
+        self.assertFalse(result["conversion_ready"])
+        self.assertIn("ReplayGain 2.0 rsgain tool is unavailable", result["health_reasons"])
 
     def test_enabled_cpu_cap_without_runtime_blocks_conversion_only(self) -> None:
         result = self.healthy(cpu_limit_percent=50, cpu_limiter_available=False)
