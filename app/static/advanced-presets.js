@@ -1,4 +1,5 @@
 const ADVANCED_LAST_PRESET_KEY='sox-resampler-last-preset';
+const ADVANCED_MODE_KEY='sox-resampler-convert-mode';
 const advancedState={override:null,dirty:false,importDocument:null,importPreview:null};
 
 (function installAdvancedStyles(){
@@ -106,8 +107,28 @@ function advancedLoadEditor(profile){
   advancedState.override=null;advancedState.dirty=false;$('advancedDirty').classList.add('hidden');advancedClearMessage();advancedUpdateWarnings();
 }
 
+function advancedSetMode(mode,{persist=true}={}){
+  const selected=mode==='advanced'?'advanced':'basic';
+  if(persist)localStorage.setItem(ADVANCED_MODE_KEY,selected);
+  const panel=$('advancedDspPanel');
+  const basic=$('advancedModeBasic');
+  const advanced=$('advancedModeAdvanced');
+  if(panel){
+    panel.classList.toggle('hidden',selected!=='advanced');
+    if(selected==='advanced')panel.open=true;
+  }
+  if(basic){basic.classList.toggle('primary',selected==='basic');basic.setAttribute('aria-pressed',String(selected==='basic'))}
+  if(advanced){advanced.classList.toggle('primary',selected==='advanced');advanced.setAttribute('aria-pressed',String(selected==='advanced'))}
+  const hint=$('advancedModeHint');
+  if(hint)hint.textContent=selected==='advanced'?'Advanced mode: SoX DSP parameters and preset management are visible below.':'Basic mode: choose a preset and review the batch. Switch to Advanced to edit individual SoX parameters.';
+}
+
 function advancedInstallPanel(){
   if($('advancedDspPanel'))return;
+  const mode=document.createElement('div');
+  mode.id='advancedModeControl';
+  mode.className='advancedModeControl';
+  mode.innerHTML=`<div><strong>Conversion controls</strong><div id="advancedModeHint" class="muted"></div></div><div class="advancedModeButtons" role="group" aria-label="Conversion control mode"><button id="advancedModeBasic" type="button" aria-pressed="false">Basic</button><button id="advancedModeAdvanced" type="button" aria-pressed="false">Advanced</button></div>`;
   const panel=document.createElement('details');
   panel.id='advancedDspPanel';
   panel.className='advancedPanel';
@@ -134,7 +155,11 @@ function advancedInstallPanel(){
       <div id="importPreview" class="notice hidden"></div>
       <div id="advancedNotice" class="notice hidden"></div>
     </div>`;
-  $('workerNotice').insertAdjacentElement('afterend',panel);
+  $('workerNotice').insertAdjacentElement('afterend',mode);
+  mode.insertAdjacentElement('afterend',panel);
+  $('advancedModeBasic').onclick=()=>advancedSetMode('basic');
+  $('advancedModeAdvanced').onclick=()=>advancedSetMode('advanced');
+  advancedSetMode(localStorage.getItem(ADVANCED_MODE_KEY)||'basic',{persist:false});
   for(const id of ['advTargetRate','advBitDepth','advQuality','advPassband','advPhase','advCompression','advDither','advHeadroom','advAliasing']){
     $(id).addEventListener('change',advancedMarkChanged);
     if($(id).tagName==='INPUT'&&$(id).type!=='checkbox')$(id).addEventListener('input',advancedMarkChanged);
