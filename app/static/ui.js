@@ -189,7 +189,7 @@ if(window.matchMedia){window.matchMedia('(prefers-color-scheme: light)').addEven
 loadHome();
 render();
 
-function loadUiAddon(src){const script=document.createElement('script');script.src=src;script.async=false;document.body.appendChild(script)}
+function loadUiAddon(src){const script=document.createElement('script');const sep=src.includes('?')?'&':'?';script.src=`${src}${sep}v=20260902c`;script.async=false;document.body.appendChild(script)}
 loadUiAddon('/static/issues-ui.js');
 loadUiAddon('/static/live-stats.js');
 loadUiAddon('/static/advanced-presets.js');
