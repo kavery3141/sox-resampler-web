@@ -1,0 +1,26 @@
+name: One-shot advanced mode toggle
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/one_shot_advanced_mode_toggle.py
+      - .github/workflows/one-shot-advanced-mode-toggle.yml
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python tools/one_shot_advanced_mode_toggle.py
+      - run: node --check app/static/advanced-presets.js
+      - run: node --check app/static/ui.js
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/static/advanced-presets.js app/static/advanced-presets.css app/static/ui.js
+          git diff --cached --quiet && exit 0
+          git commit -m "Make advanced SoX controls discoverable"
+          git push
