@@ -185,8 +185,8 @@ class ConversionJobManager:
         source_filter: dict[str, Any],
         operational: dict[str, Any] | None = None,
     ) -> int:
-        if workers not in (1, 2):
-            raise JobError("Workers must be 1 or 2")
+        if workers not in (1, 2, 3):
+            raise JobError("Workers must be 1, 2, or 3")
         if review.get("blockers") or not review.get("can_start"):
             raise JobError("Batch review contains blockers")
         profile_payload = review.get("profile")
@@ -669,7 +669,7 @@ class ConversionJobManager:
                                 (job_id,),
                             ).fetchone()["workers"]
                         )
-                    wave = files[cursor: cursor + max(1, min(2, current_workers))]
+                    wave = files[cursor: cursor + max(1, min(3, current_workers))]
                     required_temp = sum(int(r["source_bytes"]) for r in wave)
                     gate = self._runtime_gate(required_temp)
                     if gate:
@@ -753,8 +753,8 @@ class ConversionJobManager:
         self._set_flag(job_id, "cancel_requested", 1, "cancelling", "cancel_requested")
 
     def set_workers(self, job_id: int, workers: int) -> None:
-        if workers not in (1, 2):
-            raise JobError("Workers must be 1 or 2")
+        if workers not in (1, 2, 3):
+            raise JobError("Workers must be 1, 2, or 3")
         previous_workers = 0
         with db.session(self.db_path) as conn:
             row = conn.execute("SELECT id,workers FROM conversion_jobs WHERE id=?", (job_id,)).fetchone()

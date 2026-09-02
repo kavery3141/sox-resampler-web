@@ -21,7 +21,7 @@ function retryFailedInstall(){
     card.innerHTML=`
       <div class="sectionTitle"><div><h3 style="margin:0">Retry Failed Files</h3><div id="retryFailedSubtitle" class="muted"></div></div><span class="spacer"></span><button id="retryFailedClose">Close Retry Review</button></div>
       <div class="notice info retryFailedPrinciple">This creates a new manual batch containing only the exact files that failed. The original job's resolved DSP snapshot is reused. Nothing is written until you acknowledge replacement and press Start Retry.</div>
-      <div class="toolbar"><label>Concurrent conversions <select id="retryFailedWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option></select></label><label><input id="retryFailedSourcePreHash" type="checkbox"> SHA-256 pre-hash sources</label><button id="retryFailedRefresh">Refresh Retry Review</button></div>
+      <div class="toolbar"><label>Concurrent conversions <select id="retryFailedWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option><option value="3">3 — Maximum</option></select></label><label><input id="retryFailedSourcePreHash" type="checkbox"> SHA-256 pre-hash sources</label><button id="retryFailedRefresh">Refresh Retry Review</button></div>
       <div id="retryFailedStatus" class="notice">Preparing retry preflight…</div>
       <div id="retryFailedSummary" class="reviewGrid hidden"></div>
       <div id="retryFailedAlbums" class="retryFailedAlbums"></div>

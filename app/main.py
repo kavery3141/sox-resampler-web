@@ -290,8 +290,8 @@ def _retry_error(exc: RetrySpecError) -> HTTPException:
 def _retry_review(
     job_id: int, workers: int, source_pre_hash: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if workers not in (1, 2):
-        raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
+    if workers not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="Workers must be 1, 2, or 3")
     try:
         spec = failed_retry_spec(DB_PATH, job_id)
     except RetrySpecError as exc:
@@ -321,8 +321,8 @@ def _headroom_retry_review(
     headroom_db: float | None,
     source_pre_hash: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    if workers not in (1, 2):
-        raise HTTPException(status_code=400, detail="Workers must be 1 or 2")
+    if workers not in (1, 2, 3):
+        raise HTTPException(status_code=400, detail="Workers must be 1, 2, or 3")
     try:
         spec = clipping_retry_spec(DB_PATH, job_id, headroom_db=headroom_db)
     except RetrySpecError as exc:

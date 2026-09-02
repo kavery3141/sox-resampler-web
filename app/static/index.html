@@ -99,7 +99,7 @@
         <button id="resumeJob" class="iconbtn hidden"><svg class="icon" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></svg>Resume</button>
         <button id="stopJob">Stop After Current Album</button>
         <button id="cancelJob" class="danger">Cancel After Current File</button>
-        <label style="margin-left:auto">Workers <select id="activeWorkerSelect"><option value="1">1</option><option value="2">2</option></select></label>
+        <label style="margin-left:auto">Workers <select id="activeWorkerSelect"><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
         <a id="jobReportTxt" href="#" download><button>Report TXT</button></a>
         <a id="jobReportCsv" href="#" download><button>Report CSV</button></a>
       </div>
@@ -107,12 +107,12 @@
     <section id="reviewCard" class="card" style="margin:14px 0">
       <div class="toolbar">
         <label>Preset <select id="profileSelect"></select></label>
-        <label>Concurrent conversions <select id="workerSelect"><option value="1">1 — Low load</option><option value="2">2 — Faster</option></select></label>
+        <label>Concurrent conversions <select id="workerSelect"><option value="1">1 — Low load</option><option value="2">2 — Faster</option><option value="3">3 — Maximum</option></select></label>
         <button id="reviewRefresh" class="primary">Refresh Review</button>
         <button id="exportReviewTxt" disabled>Preflight TXT</button>
         <button id="exportReviewCsv" disabled>Preflight CSV</button>
       </div>
-      <div id="workerNotice" class="notice warn hidden">Two workers increase CPU and disk I/O. Use when the NAS is relatively idle.</div>
+      <div id="workerNotice" class="notice warn hidden">Multiple workers increase CPU and disk I/O. Three workers is the maximum and should be used when the NAS is relatively idle.</div>
       <div id="reviewStatus" class="notice">Select albums in Library, then review them here.</div>
       <div id="reviewSummary" class="reviewGrid hidden"></div>
       <div id="ackArea" class="ack hidden"><input id="replaceAck" type="checkbox"><label for="replaceAck"><strong>I understand the selected source FLAC files will be replaced in place only after verification passes.</strong><div class="muted" style="margin-top:4px">This acknowledgment is required for every new batch and is reset whenever the review changes.</div></label></div>

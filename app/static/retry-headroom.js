@@ -22,7 +22,7 @@ function retryHeadroomInstall(){
       <div class="notice warn retryHeadroomPrinciple">Only files whose previous failure was identified as clipping are included. A fresh preflight is required, the original DSP snapshot is preserved except for the explicit headroom change, and no source file is written until you acknowledge replacement and press Start Headroom Retry.</div>
       <div class="toolbar">
         <label>Total headroom (dB)<input id="retryHeadroomDb" type="number" min="-30" max="-0.1" step="0.1"></label>
-        <label>Concurrent conversions <select id="retryHeadroomWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option></select></label>
+        <label>Concurrent conversions <select id="retryHeadroomWorkers"><option value="1">1 — Low load</option><option value="2">2 — Faster</option><option value="3">3 — Maximum</option></select></label>
         <label><input id="retryHeadroomSourcePreHash" type="checkbox"> SHA-256 pre-hash sources</label>
         <button id="retryHeadroomRefresh">Refresh Headroom Review</button>
       </div>

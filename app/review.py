@@ -113,8 +113,8 @@ def build_batch_review(
     separate subfolders. Retry batches pass ``include_paths`` so only exact failed source files are
     selected while the complete album identity is still revalidated.
     """
-    if workers not in (1, 2):
-        raise ValueError("Workers must be 1 or 2")
+    if workers not in (1, 2, 3):
+        raise ValueError("Workers must be 1, 2, or 3")
     music_root = music_root.resolve()
     rate_set = set(rates)
     exact_paths = {str(Path(path)) for path in include_paths} if include_paths is not None else None
