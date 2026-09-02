@@ -64,8 +64,11 @@ function retryHeadroomAlbumHtml(album){
   return `<div class="retryHeadroomAlbum"><div class="album-artist">${esc(album.albumartist)}</div><div class="album-title">${esc(album.album)}</div><div class="muted">${esc(album.folder)}</div>${blockers}<div class="retryHeadroomTracks">${tracks}</div></div>`;
 }
 async function retryHeadroomOptions(jobId){
-  const response=await fetch(`/api/convert/jobs/${jobId}/retry-options`);const data=await response.json();
-  if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Unable to determine retry options');
+  const response=await fetch(`/api/convert/jobs/${jobId}/retry-options`);
+  const text=await response.text();let data=null;
+  try{data=text?JSON.parse(text):null}catch(_error){data=null}
+  if(!response.ok){const detail=typeof data?.detail==='string'?data.detail:(text||`Unable to determine retry options (HTTP ${response.status})`);throw new Error(detail)}
+  if(!data||typeof data!=='object')throw new Error('Retry options returned an invalid response');
   return data;
 }
 async function retryHeadroomPrepare(jobId){
@@ -85,8 +88,11 @@ async function retryHeadroomRefresh(){
   retryHeadroomResetAck();$('retryHeadroomStatus').className='notice';$('retryHeadroomStatus').textContent='Running fresh clipping/headroom preflight checks…';
   try{
     const params=new URLSearchParams({workers:String(workers),headroom_db:String(headroom),source_pre_hash:String(Boolean($('retryHeadroomSourcePreHash').checked))});
-    const response=await fetch(`/api/convert/jobs/${jobId}/retry-headroom-review?${params}`);const review=await response.json();
-    if(!response.ok)throw new Error(typeof review.detail==='string'?review.detail:'Headroom retry review failed');
+    const response=await fetch(`/api/convert/jobs/${jobId}/retry-headroom-review?${params}`);
+    const text=await response.text();let review=null;
+    try{review=text?JSON.parse(text):null}catch(_error){review=null}
+    if(!response.ok){const detail=typeof review?.detail==='string'?review.detail:(text||`Headroom retry review failed (HTTP ${response.status})`);throw new Error(detail)}
+    if(!review||typeof review!=='object')throw new Error('Headroom retry review returned an invalid response');
     retryHeadroomState.review=review;const retry=review.retry||{};
     $('retryHeadroomSubtitle').textContent=`Source job ${retry.source_job_id} · ${retry.clipping_failures||0} clipping-failed file${retry.clipping_failures===1?'':'s'}`;
     $('retryHeadroomChange').className='notice info';$('retryHeadroomChange').textContent=`Headroom change: ${Number(retry.original_headroom_db||0).toFixed(1)} dB → ${Number(retry.headroom_db).toFixed(1)} dB. All other resolved DSP settings remain from the source job snapshot.`;
@@ -103,8 +109,11 @@ async function retryHeadroomStart(){
   const button=$('retryHeadroomStart');button.disabled=true;const old=button.innerHTML;button.textContent='Starting Headroom Retry…';
   try{
     const body={workers:Number($('retryHeadroomWorkers').value||1),headroom_db:Number($('retryHeadroomDb').value),source_pre_hash:Boolean($('retryHeadroomSourcePreHash').checked),acknowledged_replace_in_place:true};
-    const response=await fetch(`/api/convert/jobs/${jobId}/retry-headroom-start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await response.json();
-    if(!response.ok){const detail=typeof data.detail==='string'?data.detail:(data.detail?.blockers||[]).join('; ');throw new Error(detail||'Unable to start headroom retry')}
+    const response=await fetch(`/api/convert/jobs/${jobId}/retry-headroom-start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const text=await response.text();let data=null;
+    try{data=text?JSON.parse(text):null}catch(_error){data=null}
+    if(!response.ok){const detail=typeof data?.detail==='string'?data.detail:(Array.isArray(data?.detail?.blockers)?data.detail.blockers.join('; '):(text||`Unable to start headroom retry (HTTP ${response.status})`));throw new Error(detail||'Unable to start headroom retry')}
+    if(!data||!data.job_id)throw new Error('Headroom retry start returned an invalid response');
     retryHeadroomClose();watchJob(data.job_id,true);
   }catch(error){$('retryHeadroomStatus').className='notice bad';$('retryHeadroomStatus').textContent=error.message;retryHeadroomEnableStart()}
   finally{button.innerHTML=old}

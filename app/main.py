@@ -704,6 +704,17 @@ def retry_headroom_start(job_id: int, request: HeadroomRetryStartRequest) -> dic
         job_manager.start(new_job_id)
     except JobError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        record_event(
+            DB_PATH,
+            job_manager._now(),
+            "retry_headroom_start_error",
+            {"source_job_id": job_id, "error_type": type(exc).__name__, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Headroom retry start failed unexpectedly: {type(exc).__name__}: {exc}",
+        ) from exc
     return {
         "job_id": new_job_id,
         "status": "running",
