@@ -175,6 +175,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
     SELECT
       COALESCE(tracks.albumartist,'') albumartist,
       COALESCE(tracks.album,'') album,
+      COALESCE(NULLIF(TRIM(tracks.musicbrainz_albumid),''), tracks.folder) release_key,
       MIN(tracks.folder) folder,
       COUNT(*) total_tracks,
       SUM(CASE WHEN ({where}) THEN 1 ELSE 0 END) matching_tracks,
@@ -198,7 +199,7 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
       MIN(CASE WHEN album_art.status='ready' THEN album_art.id END) artwork_id
     FROM tracks
     LEFT JOIN album_art ON album_art.folder=tracks.folder
-    GROUP BY tracks.albumartist, tracks.album
+    GROUP BY tracks.albumartist, tracks.album, release_key
     HAVING matching_tracks > 0
     ORDER BY tracks.albumartist COLLATE NOCASE, tracks.album COLLATE NOCASE
     """
@@ -211,9 +212,10 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
         rows = [dict(r) for r in db.execute(sql, qargs).fetchall()]
         album_folder_rows = db.execute(
             """
-            SELECT COALESCE(albumartist,'') albumartist,COALESCE(album,'') album,folder
+            SELECT COALESCE(albumartist,'') albumartist,COALESCE(album,'') album,
+                   COALESCE(NULLIF(TRIM(musicbrainz_albumid),''), folder) release_key,folder
             FROM tracks
-            GROUP BY albumartist,album,folder
+            GROUP BY albumartist,album,release_key,folder
             ORDER BY folder COLLATE NOCASE
             """
         ).fetchall()
@@ -239,12 +241,13 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
             SELECT
               COALESCE(albumartist,'') albumartist,
               COALESCE(album,'') album,
+              COALESCE(NULLIF(TRIM(musicbrainz_albumid),''), folder) release_key,
               SUM(CASE WHEN releasetype IS NULL OR TRIM(releasetype)='' THEN 1 ELSE 0 END) missing_releasetype,
               COUNT(DISTINCT NULLIF(TRIM(releasetype),'')) releasetype_values,
               SUM(CASE WHEN musicbrainz_albumid IS NULL OR TRIM(musicbrainz_albumid)='' THEN 1 ELSE 0 END) missing_mbid,
               COUNT(DISTINCT NULLIF(TRIM(musicbrainz_albumid),'')) mbid_values
             FROM tracks
-            GROUP BY albumartist,album
+            GROUP BY albumartist,album,release_key
             """
         ).fetchall()
         mbid_identity_rows = db.execute(
@@ -259,13 +262,13 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
             """
         ).fetchall()
 
-    album_folders: dict[tuple[str, str], list[str]] = {}
+    album_folders: dict[tuple[str, str, str], list[str]] = {}
     for item in album_folder_rows:
-        key = (str(item["albumartist"]), str(item["album"]))
+        key = (str(item["albumartist"]), str(item["album"]), str(item["release_key"]))
         album_folders.setdefault(key, []).append(str(item["folder"]))
     folder_health = {str(row["folder"]): dict(row) for row in folder_health_rows}
     album_health = {
-        (str(row["albumartist"]), str(row["album"])): dict(row)
+        (str(row["albumartist"]), str(row["album"]), str(row["release_key"])): dict(row)
         for row in album_health_rows
     }
     mbid_identities: dict[str, set[tuple[str, str]]] = {}
@@ -287,12 +290,13 @@ def candidate_albums(path: Path, rates: list[int], above: int | None = None) -> 
     for row in rows:
         blockers: list[str] = []
         warnings: list[str] = []
-        folders = album_folders.get((str(row["albumartist"]), str(row["album"])), [])
+        release_key = str(row.get("release_key") or row.get("folder") or "")
+        folders = album_folders.get((str(row["albumartist"]), str(row["album"]), release_key), [])
         row["folders"] = folders
         row["folder_count"] = len(folders)
         if folders:
             row["folder"] = folders[0]
-        logical_health = album_health.get((str(row["albumartist"]), str(row["album"])), {})
+        logical_health = album_health.get((str(row["albumartist"]), str(row["album"]), release_key), {})
         if logical_health.get("missing_releasetype") or logical_health.get("releasetype_values") != 1:
             blockers.append("RELEASETYPE missing or inconsistent across logical album")
         if logical_health.get("missing_mbid") or logical_health.get("mbid_values") != 1:

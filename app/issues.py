@@ -135,40 +135,35 @@ def build_metadata_issues(db_path: Path) -> list[dict[str, Any]]:
                 f"Non-standard sample rate above 48 kHz detected on {len(oddball)} track(s).",
             ))
 
-    # Cross-folder checks operate on the logical album identity used by the Library and
-    # conversion review: ALBUMARTIST + ALBUM. Folder-local checks above remain important because a
-    # bad ALBUMARTIST/ALBUM value can otherwise split a damaged release into separate logical rows.
-    by_album: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    # Cross-folder release checks are keyed by MusicBrainz release ID when present. A shared
+    # MBID across Disc 01/Disc 02/etc. is normal for one multidisc release and is not an issue.
+    # Same artist/title with different MBIDs are separate releases and must never be merged.
+    by_release: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
-        by_album[(_text(row.get("albumartist")), _text(row.get("album")))].append(row)
-    for (_albumartist, _album), tracks in sorted(
-        by_album.items(), key=lambda item: (item[0][0].lower(), item[0][1].lower())
-    ):
+        mbid = _text(row.get("musicbrainz_albumid"))
+        release_key = ("mbid", mbid.casefold()) if mbid else ("folder", str(row["folder"]).casefold())
+        by_release[release_key].append(row)
+    for (_kind, _release_id), tracks in sorted(by_release.items(), key=lambda item: item[0]):
         folders = sorted({str(track["folder"]) for track in tracks}, key=str.casefold)
         if len(folders) < 2:
             continue
-        for field, tag_name in (
-            ("releasetype", "RELEASETYPE"),
-            ("musicbrainz_albumid", "MUSICBRAINZ_ALBUMID"),
-        ):
-            values = sorted({_text(track.get(field)) for track in tracks if _text(track.get(field))}, key=str.casefold)
-            if len(values) <= 1:
-                continue
+        values = sorted({_text(track.get("releasetype")) for track in tracks if _text(track.get("releasetype"))}, key=str.casefold)
+        if len(values) > 1:
             affected = [
                 {
                     "path": track["path"],
                     "filename": track["filename"],
-                    "value": _track_value(track, field),
+                    "value": _track_value(track, "releasetype"),
                 }
                 for track in tracks
             ]
             issues.append(_issue(
                 "blocking",
-                f"inconsistent_{field}_across_folders",
+                "inconsistent_releasetype_across_folders",
                 folders[0],
                 tracks,
                 affected,
-                f"{tag_name} is inconsistent across {len(folders)} folders in this logical album: {' | '.join(values)}.",
+                f"RELEASETYPE is inconsistent across {len(folders)} folders in this release: {' | '.join(values)}.",
                 folders=folders,
             ))
 
@@ -211,25 +206,8 @@ def build_metadata_issues(db_path: Path) -> list[dict[str, Any]]:
             folders=folders,
         ))
 
-    # Duplicate release IDs across different folders are informational; they may be deliberate.
-    mbid_folders: dict[str, set[str]] = defaultdict(set)
-    for row in rows:
-        mbid = _text(row.get("musicbrainz_albumid"))
-        if mbid:
-            mbid_folders[mbid].add(str(row["folder"]))
-    for mbid, folders in sorted(mbid_folders.items()):
-        if len(folders) < 2 or mbid in conflicting_mbids:
-            continue
-        for folder in sorted(folders):
-            tracks = by_folder[folder]
-            affected = [
-                {"path": t["path"], "filename": t["filename"], "value": mbid}
-                for t in tracks if _text(t.get("musicbrainz_albumid")) == mbid
-            ]
-            issues.append(_issue(
-                "info", "duplicate_musicbrainz_albumid", folder, tracks, affected,
-                f"MusicBrainz Album ID also appears in {len(folders) - 1} other folder(s).",
-            ))
+    # A shared MusicBrainz release ID across multiple physical folders is expected for
+    # multidisc releases, so it is intentionally not reported as a duplicate.
 
     order = {"blocking": 0, "warning": 1, "info": 2}
     issues.sort(key=lambda i: (order.get(i["severity"], 9), i["albumartist"].lower(), i["album"].lower(), i["issue_type"]))

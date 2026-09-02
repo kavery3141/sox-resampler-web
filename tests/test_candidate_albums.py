@@ -232,6 +232,41 @@ class CandidateAlbumsTests(unittest.TestCase):
             self.assertTrue(all(not row["selectable"] for row in rows))
             self.assertTrue(all("ALBUMARTIST missing or inconsistent" in row["blockers"] for row in rows))
 
+    def test_same_title_different_mbids_are_separate_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.db"
+            db.init(db_path)
+            self._insert_track(
+                db_path, path="/music/Weezer/Weezer (2001)/01.flac", folder="/music/Weezer/Weezer (2001)",
+                rate=96000, size=1000, tracknumber="1", albumartist="Weezer", album="Weezer", mbid="green-album",
+            )
+            self._insert_track(
+                db_path, path="/music/Weezer/Weezer (2019)/01.flac", folder="/music/Weezer/Weezer (2019)",
+                rate=96000, size=1000, tracknumber="1", albumartist="Weezer", album="Weezer", mbid="teal-album",
+            )
+            rows = db.candidate_albums(db_path, [96000], above=None)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual({tuple(row["folders"]) for row in rows}, {
+                ("/music/Weezer/Weezer (2001)",), ("/music/Weezer/Weezer (2019)",),
+            })
+            self.assertTrue(all(row["selectable"] for row in rows))
+
+    def test_multidisc_same_mbid_is_one_candidate_without_duplicate_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "library.db"
+            db.init(db_path)
+            for disc in ("Disc 01", "Disc 02", "Disc 03"):
+                folder = f"/music/Test Artist/Test Album/{disc}"
+                self._insert_track(
+                    db_path, path=f"{folder}/01.flac", folder=folder, rate=96000, size=1000,
+                    tracknumber="1", mbid="multidisc-release",
+                )
+            rows = db.candidate_albums(db_path, [96000], above=None)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["folder_count"], 3)
+            self.assertTrue(rows[0]["selectable"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

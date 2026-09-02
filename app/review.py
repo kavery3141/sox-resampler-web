@@ -108,10 +108,11 @@ def build_batch_review(
 ) -> dict[str, Any]:
     """Build and revalidate a destructive batch review.
 
-    Album identity is ALBUMARTIST + ALBUM. All indexed physical folders carrying that identity are
-    reviewed together so multi-disc releases remain one batch album even when discs are stored in
-    separate subfolders. Retry batches pass ``include_paths`` so only exact failed source files are
-    selected while the complete album identity is still revalidated.
+    Release identity is MusicBrainz Album ID when present. This keeps same-title releases with
+    different MBIDs separate while allowing Disc 01/Disc 02/etc. folders sharing one MBID to be
+    reviewed together. When MBID is absent, review falls back conservatively to the requested
+    physical folder. Retry batches pass ``include_paths`` so only exact failed source files are
+    selected while the complete release identity is still revalidated.
     """
     if workers not in (1, 2, 3):
         raise ValueError("Workers must be 1, 2, or 3")
@@ -149,16 +150,38 @@ def build_batch_review(
             albumartist = key.get("albumartist", "")
             album = key.get("album", "")
             requested_folder = key.get("folder", "")
-            rows = conn.execute(
+            identity_rows = conn.execute(
                 """
-                SELECT * FROM tracks
-                WHERE COALESCE(albumartist,'')=? AND COALESCE(album,'')=?
-                ORDER BY CAST(COALESCE(discnumber,'1') AS INTEGER),
-                         CAST(COALESCE(tracknumber,'0') AS INTEGER),
-                         folder COLLATE NOCASE,filename COLLATE NOCASE
+                SELECT DISTINCT TRIM(musicbrainz_albumid) mbid
+                FROM tracks
+                WHERE COALESCE(albumartist,'')=? AND COALESCE(album,'')=? AND folder=?
+                  AND musicbrainz_albumid IS NOT NULL AND TRIM(musicbrainz_albumid)<>''
                 """,
-                (albumartist, album),
+                (albumartist, album, requested_folder),
             ).fetchall()
+            requested_mbids = sorted({str(item["mbid"]) for item in identity_rows if str(item["mbid"] or "").strip()})
+            if len(requested_mbids) == 1:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM tracks
+                    WHERE TRIM(musicbrainz_albumid)=?
+                    ORDER BY CAST(COALESCE(discnumber,'1') AS INTEGER),
+                             CAST(COALESCE(tracknumber,'0') AS INTEGER),
+                             folder COLLATE NOCASE,filename COLLATE NOCASE
+                    """,
+                    (requested_mbids[0],),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM tracks
+                    WHERE COALESCE(albumartist,'')=? AND COALESCE(album,'')=? AND folder=?
+                    ORDER BY CAST(COALESCE(discnumber,'1') AS INTEGER),
+                             CAST(COALESCE(tracknumber,'0') AS INTEGER),
+                             filename COLLATE NOCASE
+                    """,
+                    (albumartist, album, requested_folder),
+                ).fetchall()
             tracks: list[dict[str, Any]] = []
             album_source = 0
             album_output = 0
