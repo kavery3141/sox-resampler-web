@@ -1,6 +1,7 @@
 services:
   sox-resampler-web:
     image: ghcr.io/kavery3141/sox-resampler-web:dev
+    pull_policy: always
     container_name: sox-resampler-web
     restart: unless-stopped
     user: "568:568"
