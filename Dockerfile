@@ -59,7 +59,9 @@ RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.lis
     && rm -rf /var/lib/apt/lists/*
 
 ARG RSGAIN_VERSION=3.7
-RUN curl -fsSL "https://github.com/complexlogic/rsgain/releases/download/v${RSGAIN_VERSION}/rsgain_${RSGAIN_VERSION}-1_amd64.deb" -o /tmp/rsgain.deb \
+ARG RSGAIN_SHA256=0fb483b82674e63855dfba633409af0735f8600e231f512afb5627e52c01b46e
+RUN curl -fsSL "https://github.com/complexlogic/rsgain/releases/download/v${RSGAIN_VERSION}/rsgain_${RSGAIN_VERSION}_amd64.deb" -o /tmp/rsgain.deb \
+    && echo "${RSGAIN_SHA256}  /tmp/rsgain.deb" | sha256sum -c - \
     && apt-get update \
     && apt-get install -y --no-install-recommends /tmp/rsgain.deb \
     && rm -f /tmp/rsgain.deb \
