@@ -125,12 +125,20 @@ def _verify_filesystem_metadata(path: Path, expected: FilesystemMetadata, label:
 
 
 def _apply_filesystem_metadata(target: Path, expected: FilesystemMetadata) -> None:
-    try:
-        os.chmod(target, expected.mode, follow_symlinks=False)
-    except OSError as exc:
-        raise ConversionError(f"Cannot preserve mode {expected.mode:o}") from exc
-
+    # TrueNAS/ZFS datasets can use inheritable NFSv4 ACLs with aclmode=restricted. In that
+    # configuration chmod may be forbidden even when the newly-created file already has the
+    # exact effective mode we need. Avoid rewriting mode bits unless they actually differ.
     target_st = target.stat(follow_symlinks=False)
+    actual_mode = stat.S_IMODE(target_st.st_mode)
+    if actual_mode != expected.mode:
+        try:
+            os.chmod(target, expected.mode, follow_symlinks=False)
+        except OSError as exc:
+            raise ConversionError(
+                f"Cannot preserve mode {expected.mode:o}; generated output has mode {actual_mode:o}"
+            ) from exc
+        target_st = target.stat(follow_symlinks=False)
+
     if (target_st.st_uid, target_st.st_gid) != (expected.uid, expected.gid):
         try:
             os.chown(target, expected.uid, expected.gid, follow_symlinks=False)
