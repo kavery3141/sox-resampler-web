@@ -25,6 +25,8 @@ jobs:
       - name: Validate Python syntax
         run: python -m py_compile app/converter.py tests/test_application_metadata.py
       - name: Run APPLICATION metadata tests
+        env:
+          PYTHONPATH: .
         run: pytest -q tests/test_application_metadata.py
       - name: Commit patch
         run: |
