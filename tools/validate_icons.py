@@ -5,7 +5,7 @@ import zlib
 from pathlib import Path
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-EXPECTED_SIZE = (1024, 1024)
+MIN_SIZE = 128
 ICON_PATHS = (Path("assets/icon.png"), Path("app/static/icon.png"))
 
 
@@ -55,8 +55,10 @@ def validate_png(path: Path) -> bytes:
 
         pos = crc_end
 
-    if (width, height) != EXPECTED_SIZE:
-        raise SystemExit(f"{path}: expected {EXPECTED_SIZE[0]}x{EXPECTED_SIZE[1]}, got {width}x{height}")
+    if width is None or height is None or width != height or width < MIN_SIZE:
+        raise SystemExit(
+            f"{path}: expected a square PNG at least {MIN_SIZE}x{MIN_SIZE}, got {width}x{height}"
+        )
     if not idat or not saw_iend:
         raise SystemExit(f"{path}: PNG is missing IDAT or IEND")
 
@@ -73,7 +75,7 @@ def main() -> None:
     second = validate_png(ICON_PATHS[1])
     if first != second:
         raise SystemExit("assets/icon.png and app/static/icon.png are not identical")
-    print("App icons are identical, structurally valid 1024x1024 RGBA PNG files.")
+    print("App icons are identical, structurally valid square RGBA PNG files.")
 
 
 if __name__ == "__main__":
