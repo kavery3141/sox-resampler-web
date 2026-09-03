@@ -4,14 +4,15 @@ A TrueNAS SCALE-local FLAC resampling appliance with a browser UI. Audio convers
 
 ## Project status
 
-Active pre-release development. The core scanner, metadata validation, batch review, persistent conversion jobs, crash-safe replacement journal, Ultra 37 resampling backend, local artwork cache, maintenance controls, history/reports, health checks, and browser UI are implemented and exercised by the container CI build. The project has not been declared a stable 1.0 release yet.
+**Stable v1.0.0.** The project has completed a full real-library resampling run and is now considered production-ready for the documented TrueNAS deployment. The scanner, metadata validation, release-aware batch review, persistent conversion jobs, crash-safe replacement journal, Ultra 37 resampling backend, ReplayGain 2.0/true-peak recalculation, local artwork cache, maintenance controls, history/reports, health checks, recovery/retry flows, and browser UI are implemented and exercised by the container CI build.
 
 ## Default workflow
 
 - Scan/index FLACs locally in SQLite.
 - Find high-rate candidates; 96 kHz + 192 kHz are the default filters, with 88.2/176.4 kHz and `>48 kHz` discovery available.
-- Group releases by `ALBUMARTIST + ALBUM`, including multi-disc releases spread across multiple directories.
-- Block albums with missing or inconsistent `ALBUMARTIST`, `ALBUM`, `RELEASETYPE`, or `MUSICBRAINZ_ALBUMID` metadata.
+- Treat `MUSICBRAINZ_ALBUMID` as the primary release identity when present. Multi-disc releases spread across `Disc 01`, `Disc 02`, etc. remain one release when they share the same MBID, while same-named releases with different MBIDs remain separate.
+- Fall back conservatively to the physical album folder when an MBID is unavailable.
+- Block releases with missing or inconsistent conversion-critical metadata or unresolved preservation/safety issues.
 - Select albums manually, review the exact matching tracks and DSP command, acknowledge in-place replacement, then start conversion.
 - Scheduled scanning is discovery-only and never launches conversion.
 
@@ -29,29 +30,35 @@ Active pre-release development. The core scanner, metadata validation, batch rev
 
 This is intentionally **not** described as ordinary stock SoX `rate -v`, and the project does not claim bit-for-bit identity with the foobar component wrapper.
 
+## ReplayGain
+
+After a manually started conversion, the app recalculates ReplayGain using bundled `rsgain 3.7` with album analysis, true peak, a -18 LUFS target, clipping protection, and a 0 dB maximum peak. Album values are calculated from the complete logical release, including untouched tracks, while recalculated tags are written only to tracks converted by the job. Existing ReplayGain tag spelling/casing is preserved where present.
+
 ## File-safety model
 
-Each source FLAC is converted to a hidden same-directory temporary file. A destructive review now persists a per-file source snapshot covering filesystem device/inode, size, mtime, sample rate, bit depth, channels, and the four conversion-critical album tags; each file is revalidated against that snapshot immediately before work begins. Before replacement the app verifies technical output properties, user metadata and embedded pictures, performs a full FLAC decode test, checks clipping, preserves filesystem metadata, revalidates source identity again, and hashes the verified output. Advanced batch safety can optionally SHA-256 pre-hash each source before SoX; this is disabled by default, is recorded in the job/report, and is deliberately not stored in DSP presets. Replacement uses a persistent crash-recovery journal and an atomic same-filesystem exchange. The old source remains available until the new file has passed final verification; failures leave the original untouched.
+Each source FLAC is converted to a hidden same-directory temporary file. A destructive review persists a per-file source snapshot covering filesystem device/inode, size, mtime, sample rate, bit depth, channels, and conversion-critical album tags; each file is revalidated against that snapshot immediately before work begins. Before replacement the app verifies technical output properties, user metadata, embedded pictures and supported FLAC metadata blocks, performs a full FLAC decode test, checks clipping, preserves filesystem metadata, revalidates source identity again, and hashes the verified output. Advanced batch safety can optionally SHA-256 pre-hash each source before SoX; this is disabled by default, is recorded in the job/report, and is deliberately not stored in DSP presets. Replacement uses a persistent crash-recovery journal and an atomic same-filesystem exchange. The old source remains available until the new file has passed final verification; failures leave the original untouched.
 
 Interrupted replacement journals and orphan temp files are reconciled conservatively at startup and during maintenance. Ambiguous states require manual attention rather than silently promoting or deleting files.
 
-## TrueNAS development deployment
+## TrueNAS deployment
 
-The supplied `compose.truenas.yaml` currently follows the development image while the application is being built:
+The supplied `compose.truenas.yaml` is pinned to the stable `1.0.0` image:
 
+- image: `ghcr.io/kavery3141/sox-resampler-web:1.0.0`
 - music dataset: `/mnt/MainStorage/StorageDataset/Music` -> `/music`; `HOST_MUSIC_ROOT` preserves the TrueNAS-visible path for UI copy actions and reports while internal conversion paths stay under `/music`
 - app dataset: `/mnt/MainStorage/StorageDataset/sox-resampler` -> `/data`
 - Web UI: port `30058`
 - timezone: `America/Indiana/Indianapolis`
 - runtime UID/GID: `568:568`
+- up to 3 concurrent conversions
 - restart policy: `unless-stopped`
 - read-only container root filesystem with an ephemeral `/tmp`
 - all Linux capabilities dropped and `no-new-privileges` enabled
 - no `/dev/zfs` device exposure; pool health uses the read-only OpenZFS kernel status interface when available
 
-The two intended writable locations are the explicit `/music` and `/data` dataset mounts. CI validates the supplied Compose definition before building the container. Because replacement creates a new verified inode before the atomic exchange, selected source files whose UID/GID cannot be reproduced by the unprivileged runtime are blocked during preflight rather than being converted and silently changing ownership. Maintenance reports the runtime UID/GID to make dataset-permission diagnosis straightforward.
+The two intended writable locations are the explicit `/music` and `/data` dataset mounts. CI validates the supplied TrueNAS Custom App YAML before building the container. Because replacement creates a new verified inode before the atomic exchange, selected source files whose UID/GID cannot be reproduced by the unprivileged runtime are blocked during preflight rather than being converted and silently changing ownership. Maintenance reports the runtime UID/GID to make dataset-permission diagnosis straightforward.
 
-Stable deployments will use pinned release tags rather than automatic updates. The Maintenance page can check published GitHub releases and report update availability, but the application never installs an update itself.
+Stable deployments use pinned release tags rather than automatic updates. The Maintenance page can check published GitHub releases and report update availability, but the application never installs an update itself. The mutable `:dev` image remains the development channel for future changes.
 
 ## Storage health
 
@@ -59,7 +66,7 @@ New destructive conversion work fails closed if the configured ZFS pool is not c
 
 Conversion CPU throttling is optional and disabled by default. When enabled in Settings, each SoX worker receives an independent `cpulimit` controller targeting that worker's actual process ID at the configured 10–100% ceiling. Changes take effect when the next file starts, do not alter DSP settings, and never initiate conversion.
 
-Library scans are also background-friendly: the dedicated scanner worker requests Linux nice level 10 plus best-effort `ionice` level 7. Those scheduler hints are advisory and a platform that cannot apply them still performs the discovery-only scan safely; they never change conversion behavior or concurrency.
+Library scans are background-friendly: the dedicated scanner worker requests Linux nice level 10 plus best-effort `ionice` level 7. Those scheduler hints are advisory and a platform that cannot apply them still performs the discovery-only scan safely; they never change conversion behavior or concurrency.
 
 ## Branding
 
