@@ -34,7 +34,7 @@ RUN cd /build/source \
 
 FROM python:3.12-slim-bookworm
 
-ARG APP_VERSION=0.7.0-dev
+ARG APP_VERSION=1.0.0
 ARG BUILD_SHA=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
