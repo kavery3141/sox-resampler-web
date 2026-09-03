@@ -144,4 +144,5 @@ if(typeof loadUiAddon==='function'){
   loadUiAddon('/static/album-thumbnails.js');
   loadUiAddon('/static/artwork-maintenance.js');
   loadUiAddon('/static/readiness-ui.js');
+  loadUiAddon('/static/tooltips.js');
 }
