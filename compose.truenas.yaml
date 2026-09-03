@@ -1,6 +1,6 @@
 services:
   sox-resampler-web:
-    image: ghcr.io/kavery3141/sox-resampler-web:dev
+    image: ghcr.io/kavery3141/sox-resampler-web:1.0.0
     pull_policy: always
     container_name: sox-resampler-web
     restart: unless-stopped
@@ -21,7 +21,7 @@ services:
       DEFAULT_TARGET_RATE: "48000"
       DEFAULT_FLAC_COMPRESSION: "4"
       DEFAULT_WORKERS: "1"
-      MAX_WORKERS: "2"
+      MAX_WORKERS: "3"
     tmpfs:
       - /tmp:size=256m,mode=1777
     volumes:
