@@ -1,0 +1,46 @@
+name: One-shot v1.0.0 release
+
+on:
+  push:
+    paths:
+      - .github/workflows/one-shot-v1-release.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for validated release-prep build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=33807849229
+          for attempt in $(seq 1 60); do
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq .status)"
+            conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.conclusion // ""')"
+            echo "release-prep build: status=${status} conclusion=${conclusion:-pending}"
+            if [ "$status" = completed ]; then
+              test "$conclusion" = success
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Timed out waiting for release-prep build" >&2
+          exit 1
+      - name: Publish v1.0.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.0 >/dev/null 2>&1; then
+            echo "v1.0.0 already exists"
+            exit 0
+          fi
+          gh release create v1.0.0 \
+            --target e4782ecb11264a2a444e03fce6be9f9831b43b95 \
+            --title "SoX Resampler Web v1.0.0" \
+            --notes-file CHANGELOG.md
